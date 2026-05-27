@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Library</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="app-shell">
+      <div v-if="!authChecked" class="auth-screen">
+        <p class="message">Loading...</p>
+      </div>
+
+      <form v-else-if="!authenticated" class="auth-screen" @submit.prevent="login">
+        <div class="auth-panel">
+          <h1>Video Library</h1>
+          <label for="password">Password</label>
+          <input id="password" v-model="password" type="password" autocomplete="current-password" autofocus />
+          <button class="scan-button" type="submit" :disabled="loggingIn">
+            {{ loggingIn ? "Signing in" : "Sign in" }}
+          </button>
+          <p v-if="authMessage" class="message">{{ authMessage }}</p>
+        </div>
+      </form>
+
+      <template v-else>
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>Video Library</h1>
+          <p>{{ videos.length }} indexed media files</p>
+        </header>
+
+        <form class="scan-form" @submit.prevent="scanFolder">
+          <button class="scan-button" type="submit" :disabled="scanning || !configuredRoot">
+            {{ scanning ? "Scanning" : "Scan library" }}
+          </button>
+          <p v-if="message" class="message">{{ message }}</p>
+        </form>
+
+        <label class="search-box" for="search">Search</label>
+        <input id="search" v-model="query" placeholder="Title, path, or tag" />
+
+        <label class="search-box" for="category-search">Category</label>
+        <input
+          id="category-search"
+          v-model="categoryQuery"
+          list="category-search-options"
+          placeholder="All categories"
+        />
+        <datalist id="category-search-options">
+          <option v-for="category in categories" :key="category" :value="category"></option>
+        </datalist>
+
+        <div class="video-list" role="list">
+          <section v-for="group in groupedVideos" :key="group.category" class="category-group">
+            <h2 class="category-title">{{ group.category }}</h2>
+            <button
+              v-for="video in group.videos"
+              :key="video.id"
+              class="video-row"
+              :class="{ active: selected && selected.id === video.id }"
+              @click="selectVideo(video)"
+              type="button"
+            >
+              <span class="video-title">{{ video.title }}</span>
+              <span class="media-type">{{ video.media_type }}</span>
+              <span class="video-path">{{ video.relative_path }}</span>
+              <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+            </button>
+          </section>
+        </div>
+      </aside>
+
+      <section class="viewer">
+        <div v-if="selected" class="player-layout">
+          <video
+            v-if="selected.media_type === 'video'"
+            class="player"
+            :src="selected.stream_url"
+            controls
+            autoplay
+          ></video>
+          <img v-else class="image-viewer" :src="selected.stream_url" :alt="selected.title" />
+
+          <form class="details-panel" @submit.prevent="saveSelected">
+            <div>
+              <label for="title">Title</label>
+              <input id="title" v-model="editTitle" />
+            </div>
+            <div>
+              <label for="tags">Tags</label>
+              <input id="tags" v-model="editTags" placeholder="family, travel, 2024" />
+            </div>
+            <div>
+              <label for="category">Category</label>
+              <input id="category" v-model="editCategory" list="categories" placeholder="Uncategorized" />
+              <datalist id="categories">
+                <option v-for="category in categories" :key="category" :value="category"></option>
+              </datalist>
+            </div>
+            <div class="meta">
+              <span>{{ selected.filename }}</span>
+              <span>{{ formatBytes(selected.size_bytes) }}</span>
+            </div>
+            <button class="save-button" type="submit" :disabled="saving">
+              {{ saving ? "Saving" : "Save changes" }}
+            </button>
+          </form>
+        </div>
+
+        <div v-else class="empty-state">
+          <h2>Select media</h2>
+          <p>Scan the library, then choose a video or image from the list.</p>
+        </div>
+      </section>
+      </template>
+    </main>
+
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
