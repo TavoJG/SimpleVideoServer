@@ -63,6 +63,11 @@ type updateVideoRequest struct {
 	Category *string     `json:"category"`
 }
 
+type renameCategoryRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 type loginRequest struct {
 	Password string `json:"password"`
 }
@@ -100,7 +105,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-func (s *server) routes() *http.ServeMux {
+func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -111,11 +116,15 @@ func (s *server) routes() *http.ServeMux {
 	mux.Handle("GET /api/config", s.authRequired(http.HandlerFunc(s.config)))
 	mux.Handle("POST /api/scan", s.authRequired(http.HandlerFunc(s.scan)))
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
-	mux.Handle("GET /api/videos/{id}", s.authRequired(http.HandlerFunc(s.getVideo)))
-	mux.Handle("PATCH /api/videos/{id}", s.authRequired(http.HandlerFunc(s.updateVideo)))
-	mux.Handle("DELETE /api/videos/{id}", s.authRequired(http.HandlerFunc(s.deleteVideo)))
+	mux.Handle("POST /api/categories/rename", s.authRequired(http.HandlerFunc(s.renameCategory)))
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/videos/") {
+			s.authRequired(http.HandlerFunc(s.videoItem)).ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func initDB(db *sql.DB) error {
@@ -318,6 +327,38 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, videos)
 }
 
+func (s *server) videoItem(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/videos/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "delete") {
+		http.NotFound(w, r)
+		return
+	}
+	r.SetPathValue("id", parts[0])
+
+	if len(parts) == 2 {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
+			return
+		}
+		s.deleteVideo(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.getVideo(w, r)
+	case http.MethodPatch:
+		s.updateVideo(w, r)
+	case http.MethodDelete:
+		s.deleteVideo(w, r)
+	default:
+		w.Header().Set("Allow", "GET, PATCH, DELETE")
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
+	}
+}
+
 func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
@@ -440,6 +481,124 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (s *server) renameCategory(w http.ResponseWriter, r *http.Request) {
+	var req renameCategoryRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		return
+	}
+
+	from, err := normalizeCategory(req.From)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	to, err := normalizeCategory(req.To)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if from == "Uncategorized" || to == "Uncategorized" {
+		writeError(w, http.StatusBadRequest, "Uncategorized cannot be renamed.")
+		return
+	}
+	if strings.EqualFold(from, to) {
+		writeError(w, http.StatusBadRequest, "Choose a different category name.")
+		return
+	}
+
+	rows, err := s.db.Query("SELECT id, root, filename FROM videos WHERE category = ? AND missing = 0", from)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load category.")
+		return
+	}
+	defer rows.Close()
+
+	type categoryItem struct {
+		id       int64
+		root     string
+		filename string
+	}
+	items := []categoryItem{}
+	roots := map[string]bool{}
+	for rows.Next() {
+		var item categoryItem
+		if err := rows.Scan(&item.id, &item.root, &item.filename); err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not load category.")
+			return
+		}
+		items = append(items, item)
+		roots[item.root] = true
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load category.")
+		return
+	}
+	if len(items) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	for root := range roots {
+		targetDir := filepath.Join(root, to)
+		if _, err := os.Stat(targetDir); err == nil {
+			writeError(w, http.StatusBadRequest, "Target category already exists.")
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, "Could not check target category.")
+			return
+		}
+	}
+
+	renamedRoots := []string{}
+	for root := range roots {
+		fromDir := filepath.Join(root, from)
+		toDir := filepath.Join(root, to)
+		if err := os.Rename(fromDir, toDir); err != nil {
+			for i := len(renamedRoots) - 1; i >= 0; i-- {
+				previousRoot := renamedRoots[i]
+				if rollbackErr := os.Rename(filepath.Join(previousRoot, to), filepath.Join(previousRoot, from)); rollbackErr != nil {
+					log.Printf("rename category rollback failed: %v", rollbackErr)
+				}
+			}
+			writeError(w, http.StatusInternalServerError, "Could not rename category folder.")
+			return
+		}
+		renamedRoots = append(renamedRoots, root)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not update category.")
+		return
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		newPath := filepath.Join(item.root, to, item.filename)
+		newRelativePath := filepath.Join(to, item.filename)
+		if _, err := tx.Exec(
+			`UPDATE videos
+			SET path = ?, relative_path = ?, category = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?`,
+			newPath, newRelativePath, to, item.id,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not update category.")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not update category.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"from":    from,
+		"to":      to,
+		"updated": len(items),
+	})
 }
 
 func moveVideoToCategory(item video, requestedCategory string) (video, error) {

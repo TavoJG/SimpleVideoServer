@@ -46,17 +46,27 @@
         <input id="search" v-model="query" placeholder="Title, path, or tag" />
 
         <nav v-if="categoryView === 'categories'" class="category-grid" aria-label="Categories">
-          <button
+          <div
             v-for="category in categorySummaries"
             :key="category.name"
-            class="category-tile"
+            class="category-card"
             :class="{ active: selectedCategory === category.name }"
-            type="button"
-            @click="selectCategory(category.name)"
           >
-            <span>{{ category.name }}</span>
-            <strong>{{ category.count }}</strong>
-          </button>
+            <button class="category-tile" type="button" @click="selectCategory(category.name)">
+              <span>{{ category.name }}</span>
+              <strong>{{ category.count }}</strong>
+            </button>
+            <button
+              v-if="category.name !== 'Uncategorized'"
+              class="category-action"
+              type="button"
+              title="Rename category"
+              aria-label="Rename category"
+              @click="requestRenameCategory(category.name)"
+            >
+              ✎
+            </button>
+          </div>
         </nav>
 
         <div v-else class="media-browser">
@@ -148,7 +158,7 @@
               <span>{{ selected.filename }}</span>
               <span>{{ formatBytes(selected.size_bytes) }}</span>
             </div>
-            <button class="delete-button" type="button" :disabled="deleting" @click="deleteSelected">
+            <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
               {{ deleting ? "Deleting" : "Delete" }}
             </button>
             <button class="save-button" type="submit" :disabled="saving">
@@ -162,6 +172,64 @@
           <p>Scan the library, then choose a video or image from the list.</p>
         </div>
       </section>
+
+      <div
+        v-if="pendingDelete"
+        class="dialog-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-dialog-title"
+        @click.self="cancelDelete"
+      >
+        <div class="confirm-dialog">
+          <h2 id="delete-dialog-title">Delete media?</h2>
+          <p>
+            This will permanently delete
+            <strong>{{ pendingDelete.title || pendingDelete.filename }}</strong>.
+          </p>
+          <div class="dialog-actions">
+            <button class="secondary-button" type="button" :disabled="deleting" @click="cancelDelete">
+              Cancel
+            </button>
+            <button class="delete-button" type="button" :disabled="deleting" @click="confirmDelete">
+              {{ deleting ? "Deleting" : "Delete" }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="pendingRenameCategory"
+        class="dialog-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-dialog-title"
+        @click.self="cancelRenameCategory"
+      >
+        <form class="confirm-dialog" @submit.prevent="confirmRenameCategory">
+          <h2 id="rename-dialog-title">Rename category</h2>
+          <p>
+            Rename <strong>{{ pendingRenameCategory }}</strong> and its folder.
+          </p>
+          <div>
+            <label for="rename-category">New category name</label>
+            <input id="rename-category" v-model="renameCategoryName" autocomplete="off" />
+          </div>
+          <div class="dialog-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              :disabled="renamingCategory"
+              @click="cancelRenameCategory"
+            >
+              Cancel
+            </button>
+            <button class="save-button" type="submit" :disabled="renamingCategory">
+              {{ renamingCategory ? "Renaming" : "Rename" }}
+            </button>
+          </div>
+        </form>
+      </div>
       </template>
     </main>
 

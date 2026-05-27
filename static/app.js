@@ -26,6 +26,10 @@ createApp({
       bannerMessage: "",
       bannerType: "success",
       bannerTimer: null,
+      pendingDelete: null,
+      pendingRenameCategory: null,
+      renameCategoryName: "",
+      renamingCategory: false,
     };
   },
   computed: {
@@ -177,6 +181,47 @@ createApp({
         this.editCategory = this.categories[0] || "Uncategorized";
       }
     },
+    requestRenameCategory(category) {
+      if (category === "Uncategorized" || this.renamingCategory) return;
+      this.pendingRenameCategory = category;
+      this.renameCategoryName = category;
+      this.$nextTick(() => {
+        const input = document.getElementById("rename-category");
+        if (input) input.focus();
+      });
+    },
+    cancelRenameCategory() {
+      if (this.renamingCategory) return;
+      this.pendingRenameCategory = null;
+      this.renameCategoryName = "";
+    },
+    async confirmRenameCategory() {
+      if (!this.pendingRenameCategory) return;
+      const from = this.pendingRenameCategory;
+      const to = this.renameCategoryName.trim();
+      this.renamingCategory = true;
+      this.message = "";
+      try {
+        const result = await this.api("/api/categories/rename", {
+          method: "POST",
+          body: JSON.stringify({ from, to }),
+        });
+        await this.loadVideos();
+        this.selectedCategory = result.to;
+        this.categoryView = "categories";
+        if (this.selected && (this.selected.category || "Uncategorized") === from) {
+          this.selected = null;
+        }
+        this.showBanner("Category renamed.");
+      } catch (error) {
+        this.message = error.message;
+        this.showBanner(error.message, "error");
+      } finally {
+        this.renamingCategory = false;
+        this.pendingRenameCategory = null;
+        this.renameCategoryName = "";
+      }
+    },
     async scanFolder() {
       this.scanning = true;
       this.message = "";
@@ -219,29 +264,35 @@ createApp({
         this.saving = false;
       }
     },
-    async deleteSelected() {
-      if (!this.selected) return;
-      const title = this.selected.title || this.selected.filename;
-      if (!window.confirm(`Delete "${title}"?\n\nThis will permanently delete the file.`)) {
-        return;
-      }
+    requestDeleteSelected() {
+      if (!this.selected || this.deleting) return;
+      this.pendingDelete = this.selected;
+    },
+    cancelDelete() {
+      if (this.deleting) return;
+      this.pendingDelete = null;
+    },
+    async confirmDelete() {
+      if (!this.pendingDelete) return;
 
       this.deleting = true;
       this.message = "";
       try {
+        const itemToDelete = this.pendingDelete;
         const currentList = [...this.filteredVideos];
-        const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
+        const currentIndex = currentList.findIndex((video) => video.id === itemToDelete.id);
         const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
 
-        await this.api(`/api/videos/${this.selected.id}`, {
-          method: "DELETE",
+        await this.api(`/api/videos/${itemToDelete.id}/delete`, {
+          method: "POST",
+          body: JSON.stringify({}),
         });
-        const deletedId = this.selected.id;
+        const deletedId = itemToDelete.id;
         this.videos = this.videos.filter((video) => video.id !== deletedId);
         const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
         if (next) {
           this.selectVideo(next);
-        } else {
+        } else if (this.selected && this.selected.id === deletedId) {
           this.selected = null;
         }
         this.showBanner("Deleted.");
@@ -254,6 +305,7 @@ createApp({
         this.showBanner(error.message, "error");
       } finally {
         this.deleting = false;
+        this.pendingDelete = null;
       }
     },
     formatBytes(bytes) {

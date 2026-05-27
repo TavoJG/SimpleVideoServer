@@ -45,6 +45,8 @@ Example:
 
 You can also change a video's category from the web interface. Saving a new category physically moves the file into that folder under `VIDEO_ROOT`. Saving `Uncategorized` moves it back to the base folder. Category names must be single folder names, not paths. If a filename already exists in the target folder, the app appends `_1`, `_2`, and so on.
 
+Category names can be renamed from the category tile edit button. This renames the backing folder and updates all indexed media in that category. `Uncategorized` cannot be renamed because it represents files stored directly in `VIDEO_ROOT`.
+
 ## Flatten Subfolders
 
 To move supported media files from subfolders into the base folder:
@@ -85,6 +87,8 @@ The server uses Go's standard `net/http` router. If this grows beyond a small lo
 - `GET /api/videos/<id>`
 - `POST /api/scan`
 - `PATCH /api/videos/<id>` with `{ "title": "New title", "tags": ["tag one", "tag two"] }`
+- `POST /api/videos/<id>/delete`
+- `POST /api/categories/rename` with `{ "from": "old", "to": "new" }`
 - `GET /media/<id>` serves the media file
 
 Supported video extensions: `.mp4`, `.m4v`, `.mov`, `.webm`, `.mkv`, `.avi`, `.wmv`, `.flv`, `.mpeg`, `.mpg`.

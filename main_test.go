@@ -201,6 +201,168 @@ func TestDeleteVideoRemovesFileAndRecord(t *testing.T) {
 	}
 }
 
+func TestDeleteVideoRouteAllowsDeleteMethod(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, "delete-route.mp4")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "delete-route.mp4").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/videos/"+strconv.FormatInt(id, 10), nil)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("route delete status = %d body = %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestDeleteVideoRouteAllowsPostDeleteAction(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, "post-delete-route.mp4")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "post-delete-route.mp4").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/videos/"+strconv.FormatInt(id, 10)+"/delete", nil)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("route post delete status = %d body = %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old", "clip.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"from":"old","to":"new"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/rename", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("rename status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "new", "clip.mp4")); err != nil {
+		t.Fatalf("renamed file not found: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old")); !os.IsNotExist(err) {
+		t.Fatalf("old category folder still exists or stat failed unexpectedly: %v", err)
+	}
+
+	var item video
+	err = db.QueryRow(
+		"SELECT id, path, root, relative_path, category, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos WHERE filename = ?",
+		"clip.mp4",
+	).Scan(
+		&item.ID,
+		&item.Path,
+		&item.Root,
+		&item.RelativePath,
+		&item.Category,
+		&item.MediaType,
+		&item.Filename,
+		&item.Title,
+		new(string),
+		&item.SizeBytes,
+		&item.Mtime,
+		new(int),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Category != "new" || item.RelativePath != filepath.Join("new", "clip.mp4") || item.Path != filepath.Join(root, "new", "clip.mp4") {
+		t.Fatalf("record was not renamed: %+v", item)
+	}
+}
+
+func TestRenameCategoryRejectsUncategorized(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	body := bytes.NewBufferString(`{"from":"Uncategorized","to":"renamed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/rename", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("rename uncategorized status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestScanUsesConfiguredRootOnly(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
