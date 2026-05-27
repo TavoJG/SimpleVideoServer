@@ -113,6 +113,7 @@ func (s *server) routes() *http.ServeMux {
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
 	mux.Handle("GET /api/videos/{id}", s.authRequired(http.HandlerFunc(s.getVideo)))
 	mux.Handle("PATCH /api/videos/{id}", s.authRequired(http.HandlerFunc(s.updateVideo)))
+	mux.Handle("DELETE /api/videos/{id}", s.authRequired(http.HandlerFunc(s.deleteVideo)))
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
 	return mux
 }
@@ -400,6 +401,45 @@ func (s *server) updateVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	item, err := s.queryVideo(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load media.")
+		return
+	}
+
+	if err := os.Remove(item.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusInternalServerError, "Could not delete media file.")
+		return
+	}
+
+	result, err := s.db.Exec("DELETE FROM videos WHERE id = ?", id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
+		return
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
+		return
+	}
+	if affected == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func moveVideoToCategory(item video, requestedCategory string) (video, error) {

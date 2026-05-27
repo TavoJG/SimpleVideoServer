@@ -155,6 +155,52 @@ func TestPasswordAuthProtectsRoutes(t *testing.T) {
 	}
 }
 
+func TestDeleteVideoRemovesFileAndRecord(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, "delete-me.jpg")
+	if err := os.WriteFile(path, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "delete-me.jpg").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/videos/1", nil)
+	req.SetPathValue("id", strconv.FormatInt(id, 10))
+	res := httptest.NewRecorder()
+	srv.deleteVideo(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body = %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("record was not deleted")
+	}
+}
+
 func TestScanUsesConfiguredRootOnly(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {

@@ -8,6 +8,7 @@ createApp({
       editTitle: "",
       editTags: "",
       editCategory: "",
+      customCategory: false,
       configuredRoot: "",
       authChecked: false,
       authenticated: false,
@@ -16,19 +17,23 @@ createApp({
       authMessage: "",
       loggingIn: false,
       query: "",
-      categoryQuery: "",
+      selectedCategory: "Uncategorized",
+      categoryView: "categories",
       message: "",
       scanning: false,
       saving: false,
+      deleting: false,
+      bannerMessage: "",
+      bannerType: "success",
+      bannerTimer: null,
     };
   },
   computed: {
     filteredVideos() {
       const query = this.query.trim().toLowerCase();
-      const categoryQuery = this.categoryQuery.trim().toLowerCase();
       return this.videos.filter((video) => {
         const category = video.category || "Uncategorized";
-        if (categoryQuery && !category.toLowerCase().includes(categoryQuery)) {
+        if (category !== this.selectedCategory) {
           return false;
         }
         if (!query) return true;
@@ -45,21 +50,18 @@ createApp({
         return haystack.includes(query);
       });
     },
-    groupedVideos() {
-      const groups = new Map();
-      for (const video of this.filteredVideos) {
+    categorySummaries() {
+      const counts = new Map([["Uncategorized", 0]]);
+      for (const video of this.videos) {
         const category = video.category || "Uncategorized";
-        if (!groups.has(category)) groups.set(category, []);
-        groups.get(category).push(video);
+        counts.set(category, (counts.get(category) || 0) + 1);
       }
-      return [...groups.entries()].map(([category, videos]) => ({ category, videos }));
+      return [...counts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => ({ name, count }));
     },
     categories() {
-      const categories = new Set(["Uncategorized"]);
-      for (const video of this.videos) {
-        categories.add(video.category || "Uncategorized");
-      }
-      return [...categories].sort((a, b) => a.localeCompare(b));
+      return this.categorySummaries.map((category) => category.name);
     },
   },
   async mounted() {
@@ -127,17 +129,53 @@ createApp({
     async loadVideos() {
       this.videos = await this.api("/api/videos");
       if (!Array.isArray(this.videos)) this.videos = [];
+      if (!this.categories.includes(this.selectedCategory)) {
+        this.selectedCategory = this.categories[0] || "Uncategorized";
+      }
       if (this.selected) {
         const fresh = this.videos.find((video) => video.id === this.selected.id);
         if (fresh) this.selectVideo(fresh);
       }
+    },
+    selectCategory(category) {
+      this.selectedCategory = category;
+      this.categoryView = "media";
+      if (this.selected && (this.selected.category || "Uncategorized") !== category) {
+        this.selected = null;
+      }
+    },
+    showCategories() {
+      this.categoryView = "categories";
+      this.selected = null;
     },
     selectVideo(video) {
       this.selected = video;
       this.editTitle = video.title;
       this.editTags = video.tags.join(", ");
       this.editCategory = video.category || "Uncategorized";
+      this.customCategory = false;
       this.message = "";
+    },
+    showBanner(message, type = "success") {
+      this.bannerMessage = message;
+      this.bannerType = type;
+      if (this.bannerTimer) window.clearTimeout(this.bannerTimer);
+      this.bannerTimer = window.setTimeout(() => {
+        this.bannerMessage = "";
+      }, 2600);
+    },
+    enableCustomCategory() {
+      this.customCategory = true;
+      this.$nextTick(() => {
+        const input = document.getElementById("category");
+        if (input) input.focus();
+      });
+    },
+    useExistingCategory() {
+      this.customCategory = false;
+      if (!this.categories.includes(this.editCategory)) {
+        this.editCategory = this.categories[0] || "Uncategorized";
+      }
     },
     async scanFolder() {
       this.scanning = true;
@@ -170,12 +208,52 @@ createApp({
         });
         const index = this.videos.findIndex((video) => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
+        this.selectedCategory = updated.category || "Uncategorized";
+        this.categoryView = "media";
         this.selectVideo(updated);
-        this.message = "Saved.";
+        this.showBanner("Changes saved.");
       } catch (error) {
         this.message = error.message;
+        this.showBanner(error.message, "error");
       } finally {
         this.saving = false;
+      }
+    },
+    async deleteSelected() {
+      if (!this.selected) return;
+      const title = this.selected.title || this.selected.filename;
+      if (!window.confirm(`Delete "${title}"?\n\nThis will permanently delete the file.`)) {
+        return;
+      }
+
+      this.deleting = true;
+      this.message = "";
+      try {
+        const currentList = [...this.filteredVideos];
+        const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
+        const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
+
+        await this.api(`/api/videos/${this.selected.id}`, {
+          method: "DELETE",
+        });
+        const deletedId = this.selected.id;
+        this.videos = this.videos.filter((video) => video.id !== deletedId);
+        const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
+        if (next) {
+          this.selectVideo(next);
+        } else {
+          this.selected = null;
+        }
+        this.showBanner("Deleted.");
+        if (!this.categories.includes(this.selectedCategory)) {
+          this.selectedCategory = this.categories[0] || "Uncategorized";
+          this.categoryView = "categories";
+        }
+      } catch (error) {
+        this.message = error.message;
+        this.showBanner(error.message, "error");
+      } finally {
+        this.deleting = false;
       }
     },
     formatBytes(bytes) {

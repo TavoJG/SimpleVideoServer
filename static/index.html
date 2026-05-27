@@ -8,6 +8,10 @@
   </head>
   <body>
     <main id="app" class="app-shell">
+      <div v-if="bannerMessage" class="status-banner" :class="bannerType">
+        {{ bannerMessage }}
+      </div>
+
       <div v-if="!authChecked" class="auth-screen">
         <p class="message">Loading...</p>
       </div>
@@ -41,34 +45,45 @@
         <label class="search-box" for="search">Search</label>
         <input id="search" v-model="query" placeholder="Title, path, or tag" />
 
-        <label class="search-box" for="category-search">Category</label>
-        <input
-          id="category-search"
-          v-model="categoryQuery"
-          list="category-search-options"
-          placeholder="All categories"
-        />
-        <datalist id="category-search-options">
-          <option v-for="category in categories" :key="category" :value="category"></option>
-        </datalist>
+        <nav v-if="categoryView === 'categories'" class="category-grid" aria-label="Categories">
+          <button
+            v-for="category in categorySummaries"
+            :key="category.name"
+            class="category-tile"
+            :class="{ active: selectedCategory === category.name }"
+            type="button"
+            @click="selectCategory(category.name)"
+          >
+            <span>{{ category.name }}</span>
+            <strong>{{ category.count }}</strong>
+          </button>
+        </nav>
+
+        <div v-else class="media-browser">
+          <button class="back-button" type="button" @click="showCategories">
+            Back to categories
+          </button>
+          <header class="media-browser-header">
+            <h2>{{ selectedCategory }}</h2>
+            <p>{{ filteredVideos.length }} items</p>
+          </header>
 
         <div class="video-list" role="list">
-          <section v-for="group in groupedVideos" :key="group.category" class="category-group">
-            <h2 class="category-title">{{ group.category }}</h2>
-            <button
-              v-for="video in group.videos"
-              :key="video.id"
-              class="video-row"
-              :class="{ active: selected && selected.id === video.id }"
-              @click="selectVideo(video)"
-              type="button"
-            >
-              <span class="video-title">{{ video.title }}</span>
-              <span class="media-type">{{ video.media_type }}</span>
-              <span class="video-path">{{ video.relative_path }}</span>
-              <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
-            </button>
-          </section>
+          <button
+            v-for="video in filteredVideos"
+            :key="video.id"
+            class="video-row"
+            :class="{ active: selected && selected.id === video.id }"
+            @click="selectVideo(video)"
+            type="button"
+          >
+            <span class="video-title">{{ video.title }}</span>
+            <span class="media-type">{{ video.media_type }}</span>
+            <span class="video-path">{{ video.relative_path }}</span>
+            <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+          </button>
+          <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
+        </div>
         </div>
       </aside>
 
@@ -94,15 +109,48 @@
             </div>
             <div>
               <label for="category">Category</label>
-              <input id="category" v-model="editCategory" list="categories" placeholder="Uncategorized" />
-              <datalist id="categories">
-                <option v-for="category in categories" :key="category" :value="category"></option>
-              </datalist>
+              <div class="category-editor">
+                <select v-if="!customCategory" id="category" v-model="editCategory">
+                  <option v-for="category in categories" :key="category" :value="category">
+                    {{ category }}
+                  </option>
+                </select>
+                <input
+                  v-else
+                  id="category"
+                  v-model="editCategory"
+                  placeholder="New category"
+                  autocomplete="off"
+                />
+                <button
+                  v-if="!customCategory"
+                  class="icon-button"
+                  type="button"
+                  title="Create category"
+                  aria-label="Create category"
+                  @click="enableCustomCategory"
+                >
+                  ✎
+                </button>
+                <button
+                  v-else
+                  class="icon-button"
+                  type="button"
+                  title="Use existing category"
+                  aria-label="Use existing category"
+                  @click="useExistingCategory"
+                >
+                  ↩
+                </button>
+              </div>
             </div>
             <div class="meta">
               <span>{{ selected.filename }}</span>
               <span>{{ formatBytes(selected.size_bytes) }}</span>
             </div>
+            <button class="delete-button" type="button" :disabled="deleting" @click="deleteSelected">
+              {{ deleting ? "Deleting" : "Delete" }}
+            </button>
             <button class="save-button" type="submit" :disabled="saving">
               {{ saving ? "Saving" : "Save changes" }}
             </button>
