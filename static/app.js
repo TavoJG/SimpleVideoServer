@@ -30,6 +30,8 @@ createApp({
       pendingRenameCategory: null,
       renameCategoryName: "",
       renamingCategory: false,
+      imageAdvanceTimer: null,
+      imageAdvanceMs: 6000,
     };
   },
   computed: {
@@ -70,6 +72,9 @@ createApp({
   },
   async mounted() {
     await this.checkAuth();
+  },
+  beforeUnmount() {
+    this.clearImageAdvanceTimer();
   },
   methods: {
     async api(path, options = {}) {
@@ -123,6 +128,7 @@ createApp({
       await this.api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
       this.authenticated = false;
       this.videos = [];
+      this.clearImageAdvanceTimer();
       this.selected = null;
     },
     async loadConfig() {
@@ -145,20 +151,26 @@ createApp({
       this.selectedCategory = category;
       this.categoryView = "media";
       if (this.selected && (this.selected.category || "Uncategorized") !== category) {
+        this.clearImageAdvanceTimer();
         this.selected = null;
       }
     },
     showCategories() {
       this.categoryView = "categories";
+      this.clearImageAdvanceTimer();
       this.selected = null;
     },
     selectVideo(video) {
+      this.clearImageAdvanceTimer();
       this.selected = video;
       this.editTitle = video.title;
       this.editTags = video.tags.join(", ");
       this.editCategory = video.category || "Uncategorized";
       this.customCategory = false;
       this.message = "";
+      if (video.media_type === "image") {
+        this.$nextTick(() => this.scheduleImageAdvance());
+      }
     },
     showBanner(message, type = "success") {
       this.bannerMessage = message;
@@ -167,6 +179,30 @@ createApp({
       this.bannerTimer = window.setTimeout(() => {
         this.bannerMessage = "";
       }, 2600);
+    },
+    clearImageAdvanceTimer() {
+      if (this.imageAdvanceTimer) {
+        window.clearTimeout(this.imageAdvanceTimer);
+        this.imageAdvanceTimer = null;
+      }
+    },
+    scheduleImageAdvance() {
+      this.clearImageAdvanceTimer();
+      if (!this.selected || this.selected.media_type !== "image") return;
+      const selectedId = this.selected.id;
+      this.imageAdvanceTimer = window.setTimeout(() => {
+        if (this.selected && this.selected.id === selectedId) {
+          this.playNextMedia();
+        }
+      }, this.imageAdvanceMs);
+    },
+    playNextMedia() {
+      if (!this.selected) return;
+      this.clearImageAdvanceTimer();
+      const currentList = [...this.filteredVideos];
+      const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
+      const next = currentIndex >= 0 ? currentList[currentIndex + 1] : null;
+      if (next) this.selectVideo(next);
     },
     enableCustomCategory() {
       this.customCategory = true;
@@ -210,6 +246,7 @@ createApp({
         this.selectedCategory = result.to;
         this.categoryView = "categories";
         if (this.selected && (this.selected.category || "Uncategorized") === from) {
+          this.clearImageAdvanceTimer();
           this.selected = null;
         }
         this.showBanner("Category renamed.");
@@ -240,6 +277,10 @@ createApp({
     },
     async saveSelected() {
       if (!this.selected) return;
+      const currentCategory = this.selectedCategory;
+      const currentList = [...this.filteredVideos];
+      const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
+      const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
       this.saving = true;
       this.message = "";
       try {
@@ -253,9 +294,21 @@ createApp({
         });
         const index = this.videos.findIndex((video) => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
-        this.selectedCategory = updated.category || "Uncategorized";
+        const updatedCategory = updated.category || "Uncategorized";
+        const movedOutOfCurrentCategory = updatedCategory !== currentCategory;
+        this.selectedCategory = currentCategory;
         this.categoryView = "media";
-        this.selectVideo(updated);
+        if (movedOutOfCurrentCategory) {
+          const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
+          if (next) {
+            this.selectVideo(next);
+          } else {
+            this.clearImageAdvanceTimer();
+            this.selected = null;
+          }
+        } else {
+          this.selectVideo(updated);
+        }
         this.showBanner("Changes saved.");
       } catch (error) {
         this.message = error.message;
@@ -293,6 +346,7 @@ createApp({
         if (next) {
           this.selectVideo(next);
         } else if (this.selected && this.selected.id === deletedId) {
+          this.clearImageAdvanceTimer();
           this.selected = null;
         }
         this.showBanner("Deleted.");

@@ -105,8 +105,15 @@
             :src="selected.stream_url"
             controls
             autoplay
+            @ended="playNextMedia"
           ></video>
-          <img v-else class="image-viewer" :src="selected.stream_url" :alt="selected.title" />
+          <img
+            v-else
+            class="image-viewer"
+            :src="selected.stream_url"
+            :alt="selected.title"
+            @load="scheduleImageAdvance"
+          />
 
           <form class="details-panel" @submit.prevent="saveSelected">
             <div>

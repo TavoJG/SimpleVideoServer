@@ -29,6 +29,8 @@ If `APP_PASSWORD` is unset, password protection is disabled.
 
 The scanner reads supported media files directly inside the selected folder and inside immediate child folders. Child folder names become categories. Deeper nested folders are ignored.
 
+In the viewer, videos automatically advance when playback ends. Images automatically advance after a short display interval.
+
 Example:
 
 ```text
