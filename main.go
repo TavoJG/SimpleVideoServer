@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -11,9 +12,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -31,6 +34,7 @@ var imageExtensions = map[string]bool{
 type server struct {
 	db               *sql.DB
 	defaultVideoRoot string
+	thumbnailDir     string
 	password         string
 }
 
@@ -48,6 +52,7 @@ type video struct {
 	Mtime        float64  `json:"mtime"`
 	Missing      bool     `json:"missing"`
 	StreamURL    string   `json:"stream_url"`
+	ThumbnailURL string   `json:"thumbnail_url"`
 }
 
 type scanResponse struct {
@@ -87,6 +92,7 @@ func main() {
 	srv := &server{
 		db:               db,
 		defaultVideoRoot: os.Getenv("VIDEO_ROOT"),
+		thumbnailDir:     envOrDefault("VIDEO_THUMB_DIR", "thumbnails"),
 		password:         strings.TrimSpace(os.Getenv("APP_PASSWORD")),
 	}
 	if strings.TrimSpace(srv.defaultVideoRoot) != "" {
@@ -118,6 +124,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
 	mux.Handle("POST /api/categories/rename", s.authRequired(http.HandlerFunc(s.renameCategory)))
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
+	mux.Handle("GET /thumb/{id}", s.authRequired(http.HandlerFunc(s.thumbnail)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/videos/") {
 			s.authRequired(http.HandlerFunc(s.videoItem)).ServeHTTP(w, r)
@@ -712,6 +719,86 @@ func (s *server) media(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filename, stat.ModTime(), file)
 }
 
+func (s *server) thumbnail(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	var path, filename, mediaType string
+	var mtime float64
+	var missing int
+	err := s.db.QueryRow(
+		"SELECT path, filename, media_type, mtime, missing FROM videos WHERE id = ?",
+		id,
+	).Scan(&path, &filename, &mediaType, &mtime, &missing)
+	if errors.Is(err, sql.ErrNoRows) || missing != 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load thumbnail.")
+		return
+	}
+	if mediaType == "image" {
+		s.media(w, r)
+		return
+	}
+	if mediaType != "video" {
+		http.NotFound(w, r)
+		return
+	}
+
+	thumbnailPath, err := s.ensureVideoThumbnail(id, path, mtime)
+	if err != nil {
+		log.Printf("thumbnail generation failed for %s: %v", filename, err)
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, thumbnailPath)
+}
+
+func (s *server) ensureVideoThumbnail(id int64, mediaPath string, mtime float64) (string, error) {
+	thumbnailDir := strings.TrimSpace(s.thumbnailDir)
+	if thumbnailDir == "" {
+		thumbnailDir = "thumbnails"
+	}
+	if err := os.MkdirAll(thumbnailDir, 0o755); err != nil {
+		return "", err
+	}
+
+	thumbnailPath := filepath.Join(thumbnailDir, fmt.Sprintf("%d-%.0f.jpg", id, mtime))
+	if info, err := os.Stat(thumbnailPath); err == nil && !info.IsDir() {
+		return thumbnailPath, nil
+	}
+
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return "", fmt.Errorf("ffmpeg is not installed")
+	}
+
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-ss", "1",
+		"-i", mediaPath,
+		"-frames:v", "1",
+		"-vf", "scale=320:-1",
+		thumbnailPath,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
+		_ = os.Remove(thumbnailPath)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("ffmpeg timed out")
+		}
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return thumbnailPath, nil
+}
+
 func (s *server) scanFolder(rootValue string) (scanResponse, error) {
 	root, err := filepath.Abs(expandHome(rootValue))
 	if err != nil {
@@ -880,6 +967,11 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 		item.Tags = splitTags(tags)
 		item.Missing = missing != 0
 		item.StreamURL = fmt.Sprintf("/media/%d", item.ID)
+		if item.MediaType == "image" {
+			item.ThumbnailURL = item.StreamURL
+		} else {
+			item.ThumbnailURL = fmt.Sprintf("/thumb/%d", item.ID)
+		}
 		videos = append(videos, item)
 	}
 	return videos, rows.Err()

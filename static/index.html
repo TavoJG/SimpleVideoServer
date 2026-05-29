@@ -87,10 +87,23 @@
             @click="selectVideo(video)"
             type="button"
           >
-            <span class="video-title">{{ video.title }}</span>
-            <span class="media-type">{{ video.media_type }}</span>
-            <span class="video-path">{{ video.relative_path }}</span>
-            <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+            <span class="thumbnail-frame" aria-hidden="true">
+              <img
+                v-if="video.thumbnail_url"
+                class="thumbnail"
+                :src="video.thumbnail_url"
+                alt=""
+                loading="lazy"
+                @error="hideThumbnail"
+              />
+              <span class="thumbnail-type">{{ video.media_type }}</span>
+            </span>
+            <span class="video-row-content">
+              <span class="video-title">{{ video.title }}</span>
+              <span class="media-type">{{ video.media_type }}</span>
+              <span class="video-path">{{ video.relative_path }}</span>
+              <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+            </span>
           </button>
           <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
         </div>

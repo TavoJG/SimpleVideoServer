@@ -63,6 +63,10 @@ Example install on the Raspberry Pi:
   sudo systemctl enable --now video-server
 
 Edit /etc/systemd/system/video-server.service first if your video folder is not /srv/videos.
+Install ffmpeg if you want generated thumbnails for videos:
+
+  sudo apt update
+  sudo apt install -y ffmpeg
 INSTALL
 
 echo "Built ${out_dir}"

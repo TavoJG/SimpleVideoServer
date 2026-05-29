@@ -27,9 +27,17 @@ VIDEO_ROOT=/path/to/videos APP_PASSWORD='change-me' go run .
 
 If `APP_PASSWORD` is unset, password protection is disabled.
 
+Install `ffmpeg` if you want generated thumbnails for videos:
+
+```bash
+sudo apt install ffmpeg
+```
+
 The scanner reads supported media files directly inside the selected folder and inside immediate child folders. Child folder names become categories. Deeper nested folders are ignored.
 
 In the viewer, videos automatically advance when playback ends. Images automatically advance after a short display interval.
+
+The media list shows thumbnails. Images use the image file directly. Videos use `ffmpeg` to generate cached JPEG thumbnails on first request. Set `VIDEO_THUMB_DIR` to choose the cache folder; it defaults to `thumbnails`.
 
 Example:
 
@@ -92,6 +100,7 @@ The server uses Go's standard `net/http` router. If this grows beyond a small lo
 - `POST /api/videos/<id>/delete`
 - `POST /api/categories/rename` with `{ "from": "old", "to": "new" }`
 - `GET /media/<id>` serves the media file
+- `GET /thumb/<id>` serves an image thumbnail
 
 Supported video extensions: `.mp4`, `.m4v`, `.mov`, `.webm`, `.mkv`, `.avi`, `.wmv`, `.flv`, `.mpeg`, `.mpg`.
 

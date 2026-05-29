@@ -204,6 +204,9 @@ createApp({
       const next = currentIndex >= 0 ? currentList[currentIndex + 1] : null;
       if (next) this.selectVideo(next);
     },
+    hideThumbnail(event) {
+      event.target.hidden = true;
+    },
     enableCustomCategory() {
       this.customCategory = true;
       this.$nextTick(() => {

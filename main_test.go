@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,15 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	for _, item := range videos {
 		categories[item.Category] = true
 		mediaTypes[item.MediaType] = true
+		if item.ThumbnailURL == "" {
+			t.Fatalf("thumbnail url missing: %+v", item)
+		}
+		if item.MediaType == "image" && item.ThumbnailURL != item.StreamURL {
+			t.Fatalf("image thumbnail should use media url: %+v", item)
+		}
+		if item.MediaType == "video" && item.ThumbnailURL != fmt.Sprintf("/thumb/%d", item.ID) {
+			t.Fatalf("video thumbnail should use thumb url: %+v", item)
+		}
 	}
 	if !categories["Uncategorized"] || !categories["nested"] {
 		t.Fatalf("unexpected categories: %+v", videos)
