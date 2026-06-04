@@ -112,21 +112,44 @@
 
       <section class="viewer">
         <div v-if="selected" class="player-layout">
-          <video
-            v-if="selected.media_type === 'video'"
-            class="player"
-            :src="selected.stream_url"
-            controls
-            autoplay
-            @ended="playNextMedia"
-          ></video>
-          <img
-            v-else
-            class="image-viewer"
-            :src="selected.stream_url"
-            :alt="selected.title"
-            @load="scheduleImageAdvance"
-          />
+          <div class="carousel-stage">
+            <button
+              class="carousel-control previous"
+              type="button"
+              aria-label="Previous media"
+              :disabled="!hasPreviousMedia"
+              @click="playPreviousMedia"
+            >
+              ‹
+            </button>
+            <video
+              v-if="selected.media_type === 'video'"
+              class="player"
+              :src="selected.stream_url"
+              controls
+              autoplay
+              @ended="playNextMedia"
+            ></video>
+            <img
+              v-else
+              class="image-viewer"
+              :src="selected.stream_url"
+              :alt="selected.title"
+              @load="scheduleImageAdvance"
+            />
+            <button
+              class="carousel-control next"
+              type="button"
+              aria-label="Next media"
+              :disabled="!hasNextMedia"
+              @click="playNextMedia"
+            >
+              ›
+            </button>
+            <div class="carousel-counter">
+              {{ selectedPosition }} / {{ filteredVideos.length }}
+            </div>
+          </div>
 
           <form class="details-panel" @submit.prevent="saveSelected">
             <div>

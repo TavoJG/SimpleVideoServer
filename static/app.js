@@ -69,12 +69,35 @@ createApp({
     categories() {
       return this.categorySummaries.map((category) => category.name);
     },
+    selectedIndex() {
+      if (!this.selected) return -1;
+      return this.filteredVideos.findIndex((video) => video.id === this.selected.id);
+    },
+    selectedPosition() {
+      return this.selectedIndex >= 0 ? this.selectedIndex + 1 : 0;
+    },
+    hasPreviousMedia() {
+      return this.selectedIndex > 0;
+    },
+    hasNextMedia() {
+      return this.selectedIndex >= 0 && this.selectedIndex < this.filteredVideos.length - 1;
+    },
   },
   async mounted() {
     await this.checkAuth();
   },
   beforeUnmount() {
     this.clearImageAdvanceTimer();
+  },
+  watch: {
+    query() {
+      if (this.categoryView !== "media") return;
+      this.$nextTick(() => {
+        if (!this.selected || this.selectedIndex < 0) {
+          this.selectFirstInCurrentList();
+        }
+      });
+    },
   },
   methods: {
     async api(path, options = {}) {
@@ -145,6 +168,8 @@ createApp({
       if (this.selected) {
         const fresh = this.videos.find((video) => video.id === this.selected.id);
         if (fresh) this.selectVideo(fresh);
+      } else if (this.categoryView === "media") {
+        this.selectFirstInCurrentList();
       }
     },
     selectCategory(category) {
@@ -154,6 +179,7 @@ createApp({
         this.clearImageAdvanceTimer();
         this.selected = null;
       }
+      this.$nextTick(() => this.selectFirstInCurrentList());
     },
     showCategories() {
       this.categoryView = "categories";
@@ -171,6 +197,15 @@ createApp({
       if (video.media_type === "image") {
         this.$nextTick(() => this.scheduleImageAdvance());
       }
+    },
+    selectFirstInCurrentList() {
+      const first = this.filteredVideos[0];
+      if (first) {
+        this.selectVideo(first);
+        return;
+      }
+      this.clearImageAdvanceTimer();
+      this.selected = null;
     },
     showBanner(message, type = "success") {
       this.bannerMessage = message;
@@ -199,10 +234,14 @@ createApp({
     playNextMedia() {
       if (!this.selected) return;
       this.clearImageAdvanceTimer();
-      const currentList = [...this.filteredVideos];
-      const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
-      const next = currentIndex >= 0 ? currentList[currentIndex + 1] : null;
+      const next = this.selectedIndex >= 0 ? this.filteredVideos[this.selectedIndex + 1] : null;
       if (next) this.selectVideo(next);
+    },
+    playPreviousMedia() {
+      if (!this.selected) return;
+      this.clearImageAdvanceTimer();
+      const previous = this.selectedIndex > 0 ? this.filteredVideos[this.selectedIndex - 1] : null;
+      if (previous) this.selectVideo(previous);
     },
     hideThumbnail(event) {
       event.target.hidden = true;
