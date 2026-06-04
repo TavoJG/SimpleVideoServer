@@ -120,7 +120,8 @@
               :disabled="!hasPreviousMedia"
               @click="playPreviousMedia"
             >
-              ‹
+              <span class="carousel-arrow">‹</span>
+              <span>Previous</span>
             </button>
             <video
               v-if="selected.media_type === 'video'"
@@ -144,7 +145,8 @@
               :disabled="!hasNextMedia"
               @click="playNextMedia"
             >
-              ›
+              <span>Next</span>
+              <span class="carousel-arrow">›</span>
             </button>
             <div class="carousel-counter">
               {{ selectedPosition }} / {{ filteredVideos.length }}

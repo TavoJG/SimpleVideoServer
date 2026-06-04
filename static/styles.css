@@ -472,8 +472,9 @@ label {
     "media media"
     "previous next"
     "counter counter";
-  grid-template-columns: 1fr 1fr;
-  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 0;
+  row-gap: 0.8rem;
   min-height: 280px;
 }
 
@@ -499,25 +500,36 @@ label {
 }
 
 .carousel-control {
-  display: grid;
+  display: flex;
   width: 100%;
-  height: 2.9rem;
-  place-items: center;
+  min-width: 0;
+  min-height: 4.4rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
   color: var(--text);
-  font-size: 1.75rem;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 900;
   line-height: 1;
+}
+
+.carousel-arrow {
+  font-size: 2.15rem;
+  line-height: 0.8;
 }
 
 .carousel-control.previous {
   grid-area: previous;
+  border-radius: 6px 0 0 6px;
 }
 
 .carousel-control.next {
   grid-area: next;
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
 }
 
 .carousel-control:hover {
@@ -672,8 +684,7 @@ label {
   }
 
   .carousel-control {
-    height: 2.85rem;
-    font-size: 1.65rem;
+    min-height: 4.2rem;
   }
 
   .details-panel {
