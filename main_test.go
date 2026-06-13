@@ -305,8 +305,17 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "old", "clip.mp4"), []byte("video"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "old", "stale.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "old", "stale.mp4")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := srv.scanFolder(root); err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +359,18 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 	if item.Category != "new" || item.RelativePath != filepath.Join("new", "clip.mp4") || item.Path != filepath.Join(root, "new", "clip.mp4") {
 		t.Fatalf("record was not renamed: %+v", item)
 	}
+
+	var staleCategory, stalePath, staleRelativePath string
+	err = db.QueryRow(
+		"SELECT category, path, relative_path FROM videos WHERE filename = ?",
+		"stale.mp4",
+	).Scan(&staleCategory, &stalePath, &staleRelativePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleCategory != "new" || staleRelativePath != filepath.Join("new", "stale.mp4") || stalePath != filepath.Join(root, "new", "stale.mp4") {
+		t.Fatalf("missing record was not renamed: category=%q relative_path=%q path=%q", staleCategory, staleRelativePath, stalePath)
+	}
 }
 
 func TestRenameCategoryRejectsUncategorized(t *testing.T) {
@@ -370,6 +391,45 @@ func TestRenameCategoryRejectsUncategorized(t *testing.T) {
 	srv.routes().ServeHTTP(res, req)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("rename uncategorized status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestRenameCategoryRejectsExistingTargetCategory(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old", "old.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new", "new.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"from":"old","to":"new"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/rename", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("rename existing target status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 

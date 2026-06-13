@@ -516,7 +516,17 @@ func (s *server) renameCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Query("SELECT id, root, filename FROM videos WHERE category = ? AND missing = 0", from)
+	var targetCount int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM videos WHERE category = ? COLLATE NOCASE", to).Scan(&targetCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not check target category.")
+		return
+	}
+	if targetCount > 0 {
+		writeError(w, http.StatusBadRequest, "Target category already exists.")
+		return
+	}
+
+	rows, err := s.db.Query("SELECT id, root, filename FROM videos WHERE category = ?", from)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Could not load category.")
 		return
@@ -563,6 +573,12 @@ func (s *server) renameCategory(w http.ResponseWriter, r *http.Request) {
 	for root := range roots {
 		fromDir := filepath.Join(root, from)
 		toDir := filepath.Join(root, to)
+		if _, err := os.Stat(fromDir); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not check category folder.")
+			return
+		}
 		if err := os.Rename(fromDir, toDir); err != nil {
 			for i := len(renamedRoots) - 1; i >= 0; i-- {
 				previousRoot := renamedRoots[i]
