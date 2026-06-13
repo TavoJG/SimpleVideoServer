@@ -5,10 +5,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +22,9 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+//go:embed frontend/dist
+var frontendDist embed.FS
 
 var videoExtensions = map[string]bool{
 	".mp4": true, ".m4v": true, ".mov": true, ".webm": true, ".mkv": true,
@@ -114,6 +119,11 @@ func main() {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
+	frontendFiles, err := fs.Sub(frontendDist, "frontend/dist")
+	if err != nil {
+		panic(err)
+	}
+	mux.Handle("GET /assets/", http.FileServer(http.FS(frontendFiles)))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
@@ -196,7 +206,13 @@ func ensureColumn(db *sql.DB, table string, column string, definition string) er
 }
 
 func (s *server) index(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, filepath.Join("static", "index.html"))
+	index, err := frontendDist.ReadFile("frontend/dist/index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load frontend.")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(index)
 }
 
 func (s *server) authRequired(next http.Handler) http.Handler {

@@ -40,6 +40,9 @@ binary="${out_dir}/${app_name}"
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 
+echo "Building frontend..."
+npm run build
+
 echo "Building ${app_name} for linux/${goarch}${goarm:+ GOARM=${goarm}}..."
 if [[ -n "$goarm" ]]; then
   env CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOARM="$goarm" go build -buildvcs=false -trimpath -ldflags="-s -w" -o "$binary" .
@@ -47,7 +50,6 @@ else
   env CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -buildvcs=false -trimpath -ldflags="-s -w" -o "$binary" .
 fi
 
-cp -R static "$out_dir/static"
 cp README.md "$out_dir/README.md"
 cp systemd/video-server.service.example "$out_dir/video-server.service.example"
 
@@ -56,7 +58,7 @@ Example install on the Raspberry Pi:
 
   sudo useradd --system --home /opt/video-server --shell /usr/sbin/nologin video-server
   sudo mkdir -p /opt/video-server
-  sudo cp -R video-server static README.md video-server.service.example /opt/video-server/
+  sudo cp -R video-server README.md video-server.service.example /opt/video-server/
   sudo chown -R video-server:video-server /opt/video-server
   sudo cp /opt/video-server/video-server.service.example /etc/systemd/system/video-server.service
   sudo systemctl daemon-reload

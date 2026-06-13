@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -162,6 +164,55 @@ func TestPasswordAuthProtectsRoutes(t *testing.T) {
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
 		t.Fatalf("authenticated status = %d", res.Code)
+	}
+}
+
+func TestFrontendRoutesServeIndex(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/category/travel/media/42", nil)
+	res := httptest.NewRecorder()
+	(&server{db: db}).routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("frontend route status = %d body = %s", res.Code, res.Body.String())
+	}
+	if contentType := res.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("frontend route content type = %q", contentType)
+	}
+}
+
+func TestEmbeddedFrontendAssetsServe(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	assets, err := fs.Glob(frontendDist, "frontend/dist/assets/*.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) == 0 {
+		t.Fatal("embedded frontend JavaScript asset not found")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, strings.TrimPrefix(assets[0], "frontend/dist"), nil)
+	res := httptest.NewRecorder()
+	(&server{db: db}).routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("frontend asset status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 

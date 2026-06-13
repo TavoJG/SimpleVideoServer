@@ -6,10 +6,20 @@ A small Go and SQLite media viewer. It scans one media folder, uses immediate ch
 
 ```bash
 go mod download
+npm install
+npm run build
 go run .
 ```
 
 Open `http://127.0.0.1:5000`.
+
+For frontend-only development, run the Go server in one terminal and Vite in another:
+
+```bash
+npm run dev
+```
+
+Vite proxies `/api`, `/media`, and `/thumb` requests to the Go server on port 5000.
 
 Configure the video folder with `VIDEO_ROOT`:
 
@@ -18,6 +28,8 @@ VIDEO_ROOT=/path/to/videos go run .
 ```
 
 The server scans `VIDEO_ROOT` on startup. The web UI can trigger another scan, but the folder is configured only through the environment variable.
+
+The production frontend is embedded into the Go binary from `frontend/dist`. Run `npm run build` before `go run .`, `go test ./...`, or `go build` so the embedded files exist and are current.
 
 Set `APP_PASSWORD` to require a password before the library can be used:
 
@@ -81,7 +93,7 @@ Use `arm64` for Raspberry Pi OS 64-bit. Use `armv7` for 32-bit Raspberry Pi OS:
 ./scripts/build_raspberry_pi.sh armv7
 ```
 
-The output is written to `dist/raspberry-pi-arm64` or `dist/raspberry-pi-armv7`. Copy that folder to the Pi and follow the generated `INSTALL.txt`.
+The script builds the Vite frontend, embeds it into the Go binary, and writes the output to `dist/raspberry-pi-arm64` or `dist/raspberry-pi-armv7`. Copy that folder to the Pi and follow the generated `INSTALL.txt`.
 
 An example systemd unit is included at `systemd/video-server.service.example`. Edit `VIDEO_ROOT=/srv/videos` to match your video folder before enabling the service.
 

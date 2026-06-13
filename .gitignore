@@ -3,3 +3,5 @@ __pycache__/
 *.py[cod]
 videos.sqlite3
 dist/
+frontend/dist/
+node_modules/
