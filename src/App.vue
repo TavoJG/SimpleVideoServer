@@ -37,69 +37,81 @@
         <label class="search-box" for="search">Search</label>
         <input id="search" v-model="query" placeholder="Title, path, or tag" />
 
-        <nav v-if="showCategoryGrid" class="category-grid" aria-label="Categories">
-          <div
-            v-for="category in categorySummaries"
-            :key="category.name"
-            class="category-card"
-            :class="{ active: selectedCategory === category.name }"
-          >
-            <button class="category-tile" type="button" @click="selectCategory(category.name)">
-              <span>{{ category.name }}</span>
-              <strong>{{ category.count }}</strong>
-            </button>
-            <button
-              v-if="category.name !== 'Uncategorized'"
-              class="category-action"
-              type="button"
-              title="Rename category"
-              aria-label="Rename category"
-              @click="requestRenameCategory(category.name)"
+        <div v-if="showCategoryGrid" class="category-menu">
+          <nav class="category-grid" aria-label="Categories">
+            <div
+              v-for="category in categorySummaries"
+              :key="category.name"
+              class="category-card"
+              :class="{ active: selectedCategory === category.name }"
             >
-              ✎
-            </button>
-          </div>
-        </nav>
-
-        <div v-else class="media-browser">
-          <button class="back-button" type="button" @click="showCategories">
-            Back to categories
-          </button>
-          <header class="media-browser-header">
-            <h2>{{ selectedCategory }}</h2>
-            <p>{{ filteredVideos.length }} items</p>
-          </header>
-
-          <div class="video-list" role="list">
-            <button
-              v-for="video in filteredVideos"
-              :key="video.id"
-              class="video-row"
-              :class="{ active: selected && selected.id === video.id }"
-              type="button"
-              @click="selectVideo(video)"
-            >
-              <span class="thumbnail-frame" aria-hidden="true">
-                <img
-                  v-if="video.thumbnail_url"
-                  class="thumbnail"
-                  :src="video.thumbnail_url"
-                  alt=""
-                  loading="lazy"
-                  @error="hideThumbnail"
-                />
-                <span class="thumbnail-type">{{ video.media_type }}</span>
-              </span>
-              <span class="video-row-content">
-                <span class="video-title">{{ video.title }}</span>
-                <span class="media-type">{{ video.media_type }}</span>
-                <span class="video-path">{{ video.relative_path }}</span>
-                <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
-              </span>
-            </button>
-            <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
-          </div>
+              <button class="category-tile" type="button" @click="selectCategory(category.name)">
+                <span>{{ category.name }}</span>
+                <strong>{{ category.count }}</strong>
+              </button>
+            </div>
+          </nav>
         </div>
+
+        <details v-else class="media-browser selected-category-menu" open>
+          <summary>
+            <span>{{ selectedCategory }}</span>
+            <strong>{{ filteredVideos.length }} items</strong>
+          </summary>
+          <div class="selected-category-panel">
+            <button class="back-button" type="button" @click="showCategories">
+              Back to categories
+            </button>
+            <div v-if="canManageSelectedCategory" class="category-management">
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="renamingCategory"
+                @click="requestRenameCategory(selectedCategory)"
+              >
+                Rename category
+              </button>
+              <button
+                class="delete-button"
+                type="button"
+                :disabled="deletingCategory"
+                @click="requestDeleteCategory(selectedCategory)"
+              >
+                Delete category
+              </button>
+            </div>
+
+            <div class="video-list" role="list">
+              <button
+                v-for="video in filteredVideos"
+                :key="video.id"
+                class="video-row"
+                :class="{ active: selected && selected.id === video.id }"
+                type="button"
+                @click="selectVideo(video)"
+              >
+                <span class="thumbnail-frame" aria-hidden="true">
+                  <img
+                    v-if="video.thumbnail_url"
+                    class="thumbnail"
+                    :src="video.thumbnail_url"
+                    alt=""
+                    loading="lazy"
+                    @error="hideThumbnail"
+                  />
+                  <span class="thumbnail-type">{{ video.media_type }}</span>
+                </span>
+                <span class="video-row-content">
+                  <span class="video-title">{{ video.title }}</span>
+                  <span class="media-type">{{ video.media_type }}</span>
+                  <span class="video-path">{{ video.relative_path }}</span>
+                  <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+                </span>
+              </button>
+              <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
+            </div>
+          </div>
+        </details>
       </aside>
 
       <section class="viewer">
@@ -147,63 +159,66 @@
             </div>
           </div>
 
-          <form class="details-panel" @submit.prevent="saveSelected">
-            <div>
-              <label for="title">Title</label>
-              <input id="title" v-model="editTitle" />
-            </div>
-            <div>
-              <label for="tags">Tags</label>
-              <input id="tags" v-model="editTags" placeholder="family, travel, 2024" />
-            </div>
-            <div>
-              <label for="category">Category</label>
-              <div class="category-editor">
-                <select v-if="!customCategory" id="category" v-model="editCategory">
-                  <option v-for="category in categories" :key="category" :value="category">
-                    {{ category }}
-                  </option>
-                </select>
-                <input
-                  v-else
-                  id="category"
-                  v-model="editCategory"
-                  placeholder="New category"
-                  autocomplete="off"
-                />
-                <button
-                  v-if="!customCategory"
-                  class="icon-button"
-                  type="button"
-                  title="Create category"
-                  aria-label="Create category"
-                  @click="enableCustomCategory"
-                >
-                  +
-                </button>
-                <button
-                  v-else
-                  class="icon-button"
-                  type="button"
-                  title="Use existing category"
-                  aria-label="Use existing category"
-                  @click="useExistingCategory"
-                >
-                  ↩
-                </button>
+          <details class="details-card" :key="selected.id">
+            <summary>Edit / rename / delete</summary>
+            <form class="details-panel" @submit.prevent="saveSelected">
+              <div>
+                <label for="title">Title</label>
+                <input id="title" v-model="editTitle" />
               </div>
-            </div>
-            <div class="meta">
-              <span>{{ selected.filename }}</span>
-              <span>{{ formatBytes(selected.size_bytes) }}</span>
-            </div>
-            <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
-              {{ deleting ? "Deleting" : "Delete" }}
-            </button>
-            <button class="save-button" type="submit" :disabled="saving">
-              {{ saving ? "Saving" : "Save changes" }}
-            </button>
-          </form>
+              <div>
+                <label for="tags">Tags</label>
+                <input id="tags" v-model="editTags" placeholder="family, travel, 2024" />
+              </div>
+              <div>
+                <label for="category">Category</label>
+                <div class="category-editor">
+                  <select v-if="!customCategory" id="category" v-model="editCategory">
+                    <option v-for="category in categories" :key="category" :value="category">
+                      {{ category }}
+                    </option>
+                  </select>
+                  <input
+                    v-else
+                    id="category"
+                    v-model="editCategory"
+                    placeholder="New category"
+                    autocomplete="off"
+                  />
+                  <button
+                    v-if="!customCategory"
+                    class="icon-button"
+                    type="button"
+                    title="Create category"
+                    aria-label="Create category"
+                    @click="enableCustomCategory"
+                  >
+                    +
+                  </button>
+                  <button
+                    v-else
+                    class="icon-button"
+                    type="button"
+                    title="Use existing category"
+                    aria-label="Use existing category"
+                    @click="useExistingCategory"
+                  >
+                    ↩
+                  </button>
+                </div>
+              </div>
+              <div class="meta">
+                <span>{{ selected.filename }}</span>
+                <span>{{ formatBytes(selected.size_bytes) }}</span>
+              </div>
+              <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
+                {{ deleting ? "Deleting" : "Delete" }}
+              </button>
+              <button class="save-button" type="submit" :disabled="saving">
+                {{ saving ? "Saving" : "Save changes" }}
+              </button>
+            </form>
+          </details>
         </div>
 
         <div v-else class="empty-state">
@@ -269,6 +284,36 @@
           </div>
         </form>
       </div>
+
+      <div
+        v-if="pendingDeleteCategory"
+        class="dialog-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-category-dialog-title"
+        @click.self="cancelDeleteCategory"
+      >
+        <div class="confirm-dialog">
+          <h2 id="delete-category-dialog-title">Delete category?</h2>
+          <p>
+            This will permanently delete every media file in
+            <strong>{{ pendingDeleteCategory }}</strong>.
+          </p>
+          <div class="dialog-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              :disabled="deletingCategory"
+              @click="cancelDeleteCategory"
+            >
+              Cancel
+            </button>
+            <button class="delete-button" type="button" :disabled="deletingCategory" @click="confirmDeleteCategory">
+              {{ deletingCategory ? "Deleting" : "Delete category" }}
+            </button>
+          </div>
+        </div>
+      </div>
     </template>
   </main>
 </template>
@@ -303,6 +348,8 @@ export default {
       pendingRenameCategory: null,
       renameCategoryName: "",
       renamingCategory: false,
+      pendingDeleteCategory: null,
+      deletingCategory: false,
       imageAdvanceTimer: null,
       imageAdvanceMs: 6000,
     };
@@ -342,6 +389,9 @@ export default {
     },
     categories() {
       return this.categorySummaries.map((category) => category.name);
+    },
+    canManageSelectedCategory() {
+      return this.selectedCategory !== "Uncategorized" && this.categories.includes(this.selectedCategory);
     },
     selectedIndex() {
       if (!this.selected) return -1;
@@ -585,6 +635,39 @@ export default {
         this.renamingCategory = false;
         this.pendingRenameCategory = null;
         this.renameCategoryName = "";
+      }
+    },
+    requestDeleteCategory(category) {
+      if (category === "Uncategorized" || this.deletingCategory) return;
+      this.pendingDeleteCategory = category;
+    },
+    cancelDeleteCategory() {
+      if (this.deletingCategory) return;
+      this.pendingDeleteCategory = null;
+    },
+    async confirmDeleteCategory() {
+      if (!this.pendingDeleteCategory) return;
+
+      const category = this.pendingDeleteCategory;
+      this.deletingCategory = true;
+      this.message = "";
+      try {
+        const result = await this.api("/api/categories/delete", {
+          method: "POST",
+          body: JSON.stringify({ category }),
+        });
+        this.videos = this.videos.filter((video) => (video.category || "Uncategorized") !== category);
+        this.clearImageAdvanceTimer();
+        this.selected = null;
+        this.selectedCategory = this.categories[0] || "Uncategorized";
+        this.$router.push({ name: "categories" });
+        this.showBanner(`Deleted ${result.deleted} items.`);
+      } catch (error) {
+        this.message = error.message;
+        this.showBanner(error.message, "error");
+      } finally {
+        this.deletingCategory = false;
+        this.pendingDeleteCategory = null;
       }
     },
     async scanFolder() {

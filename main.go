@@ -78,6 +78,10 @@ type renameCategoryRequest struct {
 	To   string `json:"to"`
 }
 
+type deleteCategoryRequest struct {
+	Category string `json:"category"`
+}
+
 type loginRequest struct {
 	Password string `json:"password"`
 }
@@ -133,6 +137,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/scan", s.authRequired(http.HandlerFunc(s.scan)))
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
 	mux.Handle("POST /api/categories/rename", s.authRequired(http.HandlerFunc(s.renameCategory)))
+	mux.Handle("POST /api/categories/delete", s.authRequired(http.HandlerFunc(s.deleteCategory)))
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
 	mux.Handle("GET /thumb/{id}", s.authRequired(http.HandlerFunc(s.thumbnail)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +146,86 @@ func (s *server) routes() http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
+	})
+}
+
+func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
+	var req deleteCategoryRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		return
+	}
+
+	category, err := normalizeCategory(req.Category)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if category == "Uncategorized" {
+		writeError(w, http.StatusBadRequest, "Uncategorized cannot be deleted.")
+		return
+	}
+
+	rows, err := s.db.Query("SELECT id, path, root FROM videos WHERE category = ?", category)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load category.")
+		return
+	}
+	defer rows.Close()
+
+	type categoryItem struct {
+		id   int64
+		path string
+		root string
+	}
+	items := []categoryItem{}
+	roots := map[string]bool{}
+	for rows.Next() {
+		var item categoryItem
+		if err := rows.Scan(&item.id, &item.path, &item.root); err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not load category.")
+			return
+		}
+		items = append(items, item)
+		roots[item.root] = true
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load category.")
+		return
+	}
+	if len(items) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	for _, item := range items {
+		if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, "Could not delete category media files.")
+			return
+		}
+	}
+
+	result, err := s.db.Exec("DELETE FROM videos WHERE category = ?", category)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
+		return
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
+		return
+	}
+
+	for root := range roots {
+		categoryDir := filepath.Join(root, category)
+		if err := os.Remove(categoryDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("delete category could not remove folder %s: %v", categoryDir, err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"category": category,
+		"deleted":  deleted,
 	})
 }
 

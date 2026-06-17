@@ -484,6 +484,86 @@ func TestRenameCategoryRejectsExistingTargetCategory(t *testing.T) {
 	}
 }
 
+func TestDeleteCategoryDeletesFolderFilesAndRecords(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "doomed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "doomed", "clip.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"category":"doomed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/delete", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete category status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "doomed", "clip.mp4")); !os.IsNotExist(err) {
+		t.Fatalf("deleted category file still exists or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "doomed")); !os.IsNotExist(err) {
+		t.Fatalf("deleted category folder still exists or stat failed unexpectedly: %v", err)
+	}
+
+	var deletedCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE category = ?", "doomed").Scan(&deletedCount); err != nil {
+		t.Fatal(err)
+	}
+	if deletedCount != 0 {
+		t.Fatalf("deleted category records remain: %d", deletedCount)
+	}
+
+	var keepCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE filename = ?", "keep.mp4").Scan(&keepCount); err != nil {
+		t.Fatal(err)
+	}
+	if keepCount != 1 {
+		t.Fatalf("unrelated record count = %d", keepCount)
+	}
+}
+
+func TestDeleteCategoryRejectsUncategorized(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	body := bytes.NewBufferString(`{"category":"Uncategorized"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/delete", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("delete uncategorized status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestScanUsesConfiguredRootOnly(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
