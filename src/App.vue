@@ -48,6 +48,7 @@
               <button class="category-tile" type="button" @click="selectCategory(category.name)">
                 <span>{{ category.name }}</span>
                 <strong>{{ category.count }}</strong>
+                <small v-if="category.last_reproduced">{{ formatDateTime(category.last_reproduced) }}</small>
               </button>
             </div>
           </nav>
@@ -322,6 +323,7 @@
 export default {
   data() {
     return {
+      categorySummariesData: [],
       videos: [],
       selected: null,
       editTitle: "",
@@ -378,14 +380,7 @@ export default {
       });
     },
     categorySummaries() {
-      const counts = new Map([["Uncategorized", 0]]);
-      for (const video of this.videos) {
-        const category = video.category || "Uncategorized";
-        counts.set(category, (counts.get(category) || 0) + 1);
-      }
-      return [...counts.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, count]) => ({ name, count }));
+      return this.categorySummariesData;
     },
     categories() {
       return this.categorySummaries.map((category) => category.name);
@@ -448,7 +443,7 @@ export default {
         this.authenticated = status.authenticated;
         if (this.authenticated) {
           await this.loadConfig();
-          await this.loadVideos();
+          await this.loadLibrary();
         }
       } catch (error) {
         this.authMessage = error.message;
@@ -467,7 +462,7 @@ export default {
         this.authenticated = result.authenticated;
         this.password = "";
         await this.loadConfig();
-        await this.loadVideos();
+        await this.loadLibrary();
       } catch (error) {
         this.authMessage = error.message;
       } finally {
@@ -477,6 +472,7 @@ export default {
     async logout() {
       await this.api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
       this.authenticated = false;
+      this.categorySummariesData = [];
       this.videos = [];
       this.clearImageAdvanceTimer();
       this.selected = null;
@@ -490,6 +486,13 @@ export default {
     async loadVideos() {
       this.videos = await this.api("/api/videos");
       if (!Array.isArray(this.videos)) this.videos = [];
+    },
+    async loadCategories() {
+      this.categorySummariesData = await this.api("/api/categories");
+      if (!Array.isArray(this.categorySummariesData)) this.categorySummariesData = [];
+    },
+    async loadLibrary() {
+      await Promise.all([this.loadCategories(), this.loadVideos()]);
       this.syncRouteState();
     },
     syncRouteState() {
@@ -620,7 +623,7 @@ export default {
           method: "POST",
           body: JSON.stringify({ from, to }),
         });
-        await this.loadVideos();
+        await this.loadLibrary();
         this.selectedCategory = result.to;
         if (this.selected && (this.selected.category || "Uncategorized") === from) {
           this.clearImageAdvanceTimer();
@@ -656,7 +659,7 @@ export default {
           method: "POST",
           body: JSON.stringify({ category }),
         });
-        this.videos = this.videos.filter((video) => (video.category || "Uncategorized") !== category);
+        await this.loadLibrary();
         this.clearImageAdvanceTimer();
         this.selected = null;
         this.selectedCategory = this.categories[0] || "Uncategorized";
@@ -679,7 +682,7 @@ export default {
           body: JSON.stringify({}),
         });
         this.message = `Found ${result.found}; added ${result.added}; updated ${result.updated}.`;
-        await this.loadVideos();
+        await this.loadLibrary();
       } catch (error) {
         this.message = error.message;
       } finally {
@@ -705,6 +708,7 @@ export default {
         });
         const index = this.videos.findIndex((video) => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
+        await this.loadCategories();
         const updatedCategory = updated.category || "Uncategorized";
         const movedOutOfCurrentCategory = updatedCategory !== currentCategory;
         this.selectedCategory = currentCategory;
@@ -753,6 +757,7 @@ export default {
         });
         const deletedId = itemToDelete.id;
         this.videos = this.videos.filter((video) => video.id !== deletedId);
+        await this.loadCategories();
         const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
         if (next) {
           this.selectVideo(next);
@@ -784,6 +789,11 @@ export default {
       const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
       const value = bytes / 1024 ** index;
       return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+    },
+    formatDateTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return `Played ${date.toLocaleString()}`;
     },
   },
 };

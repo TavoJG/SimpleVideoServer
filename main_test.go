@@ -17,6 +17,42 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func categoryNames(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	rows, err := db.Query("SELECT name FROM categories ORDER BY name COLLATE NOCASE ASC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+func categoryLastReproduced(t *testing.T, db *sql.DB, name string) string {
+	t.Helper()
+
+	var value sql.NullString
+	if err := db.QueryRow("SELECT last_reproduced FROM categories WHERE name = ?", name).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
 func TestScanAndUpdateVideo(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
@@ -89,6 +125,9 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if !categories["Uncategorized"] || !categories["nested"] {
 		t.Fatalf("unexpected categories: %+v", videos)
 	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "nested,Uncategorized" {
+		t.Fatalf("unexpected category records after scan: %s", got)
+	}
 	if !mediaTypes["video"] || !mediaTypes["image"] {
 		t.Fatalf("unexpected media types: %+v", videos)
 	}
@@ -125,6 +164,61 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "demo.mp4")); !os.IsNotExist(err) {
 		t.Fatalf("old file still exists or stat failed unexpectedly: %v", err)
+	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "moved,nested,Uncategorized" {
+		t.Fatalf("unexpected category records after move: %s", got)
+	}
+}
+
+func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "uncategorized.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "travel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "travel", "trip.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE categories SET last_reproduced = '2026-08-04 12:34:56' WHERE name = ?", "travel"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/categories", nil)
+	res := httptest.NewRecorder()
+	srv.listCategories(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("list categories status = %d", res.Code)
+	}
+
+	var categories []categorySummary
+	if err := json.NewDecoder(res.Body).Decode(&categories); err != nil {
+		t.Fatal(err)
+	}
+	if len(categories) != 2 {
+		t.Fatalf("unexpected categories: %+v", categories)
+	}
+	if categories[0].Name != "travel" || categories[0].Count != 1 || categories[0].LastReproduced == nil || *categories[0].LastReproduced != "2026-08-04 12:34:56" {
+		t.Fatalf("unexpected first category: %+v", categories[0])
+	}
+	if categories[1].Name != "Uncategorized" || categories[1].Count != 1 {
+		t.Fatalf("unexpected second category: %+v", categories[1])
 	}
 }
 
@@ -422,6 +516,9 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 	if staleCategory != "new" || staleRelativePath != filepath.Join("new", "stale.mp4") || stalePath != filepath.Join(root, "new", "stale.mp4") {
 		t.Fatalf("missing record was not renamed: category=%q relative_path=%q path=%q", staleCategory, staleRelativePath, stalePath)
 	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "new,Uncategorized" {
+		t.Fatalf("unexpected category records after rename: %s", got)
+	}
 }
 
 func TestRenameCategoryRejectsUncategorized(t *testing.T) {
@@ -541,6 +638,9 @@ func TestDeleteCategoryDeletesFolderFilesAndRecords(t *testing.T) {
 	if keepCount != 1 {
 		t.Fatalf("unrelated record count = %d", keepCount)
 	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "Uncategorized" {
+		t.Fatalf("unexpected category records after delete: %s", got)
+	}
 }
 
 func TestDeleteCategoryRejectsUncategorized(t *testing.T) {
@@ -561,6 +661,95 @@ func TestDeleteCategoryRejectsUncategorized(t *testing.T) {
 	srv.routes().ServeHTTP(res, req)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("delete uncategorized status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestDeleteVideoRemovesEmptyCategoryRecord(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "solo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "solo", "clip.mp4")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	var id int64
+	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "clip.mp4").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/videos/"+strconv.FormatInt(id, 10), nil)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete solo category status = %d body = %s", res.Code, res.Body.String())
+	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "Uncategorized" {
+		t.Fatalf("unexpected category records after deleting only item: %s", got)
+	}
+}
+
+func TestMediaRequestUpdatesCategoryLastReproduced(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "travel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "travel", "clip.mp4")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+	before := categoryLastReproduced(t, db, "travel")
+	if before != "" {
+		t.Fatalf("expected empty last_reproduced before media request, got %q", before)
+	}
+
+	var id int64
+	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "clip.mp4").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/media/"+strconv.FormatInt(id, 10), nil)
+	req.SetPathValue("id", strconv.FormatInt(id, 10))
+	res := httptest.NewRecorder()
+	srv.media(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("media status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	after := categoryLastReproduced(t, db, "travel")
+	if after == "" {
+		t.Fatal("expected last_reproduced to be updated")
 	}
 }
 
