@@ -48,6 +48,9 @@
               <button class="category-tile" type="button" @click="selectCategory(category.name)">
                 <span>{{ category.name }}</span>
                 <strong>{{ category.count }}</strong>
+                <span v-if="category.locked" class="lock-indicator">
+                  {{ category.unlocked ? "Unlocked" : "Locked" }}
+                </span>
                 <small v-if="category.last_reproduced">{{ formatDateTime(category.last_reproduced) }}</small>
               </button>
             </div>
@@ -56,13 +59,64 @@
 
         <details v-else class="media-browser selected-category-menu" open>
           <summary>
-            <span>{{ selectedCategory }}</span>
+            <span>{{ selectedCategoryLabel }}</span>
             <strong>{{ filteredVideos.length }} items</strong>
           </summary>
           <div class="selected-category-panel">
             <button class="back-button" type="button" @click="showCategories">
               Back to categories
             </button>
+            <div v-if="selectedCategorySubcategories.length" class="subcategory-browser">
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="!selectedSubcategory"
+                @click="clearSelectedSubcategory"
+              >
+                All media
+              </button>
+              <button
+                v-for="subcategory in selectedCategorySubcategories"
+                :key="subcategory.name"
+                class="secondary-button"
+                type="button"
+                :class="{ active: selectedSubcategory === subcategory.name }"
+                @click="selectSubcategory(subcategory.name)"
+              >
+                {{ subcategory.name }} ({{ subcategory.count }})
+              </button>
+            </div>
+            <div v-if="isSelectedCategoryLocked" class="category-lock-status">
+              <p class="message">
+                {{ isSelectedCategoryUnlocked ? "Extra password verified for this category." : "This category is locked." }}
+              </p>
+              <button
+                v-if="isSelectedCategoryUnlocked"
+                class="secondary-button"
+                type="button"
+                :disabled="categoryUnlocking"
+                @click="relockSelectedCategory"
+              >
+                Lock again
+              </button>
+            </div>
+
+            <form v-if="isSelectedCategoryLocked && !isSelectedCategoryUnlocked" class="unlock-form" @submit.prevent="unlockSelectedCategory">
+              <div>
+                <label for="category-password">Category password</label>
+                <input
+                  id="category-password"
+                  v-model="categoryPassword"
+                  type="password"
+                  autocomplete="current-password"
+                />
+              </div>
+              <button class="save-button" type="submit" :disabled="categoryUnlocking">
+                {{ categoryUnlocking ? "Unlocking" : "Unlock category" }}
+              </button>
+              <p v-if="categoryUnlockMessage" class="message">{{ categoryUnlockMessage }}</p>
+            </form>
+
             <div v-if="canManageSelectedCategory" class="category-management">
               <button
                 class="secondary-button"
@@ -109,7 +163,8 @@
                   <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
                 </span>
               </button>
-              <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
+              <p v-if="!canViewSelectedCategory" class="message">Unlock this category to view its media.</p>
+              <p v-else-if="!filteredVideos.length" class="message">No media in this category.</p>
             </div>
           </div>
         </details>
@@ -203,6 +258,51 @@
                     title="Use existing category"
                     aria-label="Use existing category"
                     @click="useExistingCategory"
+                  >
+                    ↩
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label for="subcategory">Subcategory</label>
+                <div class="category-editor">
+                  <select
+                    v-if="!customSubcategory"
+                    id="subcategory"
+                    v-model="editSubcategory"
+                    :disabled="editCategory === 'Uncategorized'"
+                  >
+                    <option value="">No subcategory</option>
+                    <option v-for="subcategory in editorSubcategories" :key="subcategory" :value="subcategory">
+                      {{ subcategory }}
+                    </option>
+                  </select>
+                  <input
+                    v-else
+                    id="subcategory"
+                    v-model="editSubcategory"
+                    placeholder="New subcategory"
+                    autocomplete="off"
+                    :disabled="editCategory === 'Uncategorized'"
+                  />
+                  <button
+                    v-if="!customSubcategory"
+                    class="icon-button"
+                    type="button"
+                    title="Create subcategory"
+                    aria-label="Create subcategory"
+                    :disabled="editCategory === 'Uncategorized'"
+                    @click="enableCustomSubcategory"
+                  >
+                    +
+                  </button>
+                  <button
+                    v-else
+                    class="icon-button"
+                    type="button"
+                    title="Use existing subcategory"
+                    aria-label="Use existing subcategory"
+                    @click="useExistingSubcategory"
                   >
                     ↩
                   </button>
@@ -329,7 +429,9 @@ export default {
       editTitle: "",
       editTags: "",
       editCategory: "",
+      editSubcategory: "",
       customCategory: false,
+      customSubcategory: false,
       configuredRoot: "",
       authChecked: false,
       authenticated: false,
@@ -339,6 +441,7 @@ export default {
       loggingIn: false,
       query: "",
       selectedCategory: "Uncategorized",
+      selectedSubcategory: "",
       message: "",
       scanning: false,
       saving: false,
@@ -354,6 +457,9 @@ export default {
       deletingCategory: false,
       imageAdvanceTimer: null,
       imageAdvanceMs: 6000,
+      categoryPassword: "",
+      categoryUnlocking: false,
+      categoryUnlockMessage: "",
     };
   },
   computed: {
@@ -365,6 +471,7 @@ export default {
       return this.videos.filter((video) => {
         const category = video.category || "Uncategorized";
         if (category !== this.selectedCategory) return false;
+        if (this.selectedSubcategory && (video.subcategory || "") !== this.selectedSubcategory) return false;
         if (!query) return true;
         const haystack = [
           video.title,
@@ -372,6 +479,7 @@ export default {
           video.relative_path,
           video.media_type,
           category,
+          video.subcategory || "",
           video.tags.join(" "),
         ]
           .join(" ")
@@ -385,8 +493,34 @@ export default {
     categories() {
       return this.categorySummaries.map((category) => category.name);
     },
+    selectedCategorySummary() {
+      return this.categorySummaries.find((category) => category.name === this.selectedCategory) || null;
+    },
+    selectedCategorySubcategories() {
+      return this.selectedCategorySummary?.subcategories || [];
+    },
+    selectedCategoryLabel() {
+      return this.selectedSubcategory ? `${this.selectedCategory} / ${this.selectedSubcategory}` : this.selectedCategory;
+    },
+    editorSubcategories() {
+      const summary = this.categorySummaries.find((category) => category.name === this.editCategory);
+      return (summary?.subcategories || []).map((subcategory) => subcategory.name);
+    },
+    isSelectedCategoryLocked() {
+      return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.locked);
+    },
+    isSelectedCategoryUnlocked() {
+      return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.unlocked);
+    },
+    canViewSelectedCategory() {
+      return !this.isSelectedCategoryLocked || this.isSelectedCategoryUnlocked;
+    },
     canManageSelectedCategory() {
-      return this.selectedCategory !== "Uncategorized" && this.categories.includes(this.selectedCategory);
+      return (
+        this.selectedCategory !== "Uncategorized" &&
+        this.categories.includes(this.selectedCategory) &&
+        this.canViewSelectedCategory
+      );
     },
     selectedIndex() {
       if (!this.selected) return -1;
@@ -405,6 +539,12 @@ export default {
   watch: {
     $route() {
       this.syncRouteState();
+    },
+    editCategory(value) {
+      if (value === "Uncategorized") {
+        this.editSubcategory = "";
+        this.customSubcategory = false;
+      }
     },
     query() {
       if (this.showCategoryGrid) return;
@@ -476,6 +616,8 @@ export default {
       this.videos = [];
       this.clearImageAdvanceTimer();
       this.selected = null;
+      this.categoryPassword = "";
+      this.categoryUnlockMessage = "";
       this.$router.push({ name: "categories" });
     },
     async loadConfig() {
@@ -500,13 +642,29 @@ export default {
       if (this.$route.name === "categories") {
         this.clearImageAdvanceTimer();
         this.selected = null;
+        this.selectedSubcategory = "";
+        this.categoryPassword = "";
+        this.categoryUnlockMessage = "";
         return;
       }
 
       const category = String(this.$route.params.category || "Uncategorized");
+      if (!this.categories.includes(category)) {
+        this.$router.push({ name: "categories" });
+        return;
+      }
       this.selectedCategory = category;
+      this.selectedSubcategory = String(this.$route.params.subcategory || "");
+      if (
+        this.selectedSubcategory &&
+        !this.selectedCategorySubcategories.some((subcategory) => subcategory.name === this.selectedSubcategory)
+      ) {
+        this.$router.push({ name: "category", params: { category } });
+        return;
+      }
+      this.categoryUnlockMessage = "";
 
-      if (this.$route.name !== "media") {
+      if (this.$route.name !== "media" && this.$route.name !== "subcategory-media") {
         this.clearImageAdvanceTimer();
         this.selected = null;
         return;
@@ -524,6 +682,12 @@ export default {
     selectCategory(category) {
       this.$router.push({ name: "category", params: { category } });
     },
+    selectSubcategory(subcategory) {
+      this.$router.push({ name: "subcategory", params: { category: this.selectedCategory, subcategory } });
+    },
+    clearSelectedSubcategory() {
+      this.$router.push({ name: "category", params: { category: this.selectedCategory } });
+    },
     showCategories() {
       this.$router.push({ name: "categories" });
     },
@@ -531,20 +695,36 @@ export default {
       this.clearImageAdvanceTimer();
       this.selected = video;
       this.selectedCategory = video.category || "Uncategorized";
+      this.selectedSubcategory = video.subcategory || "";
       this.editTitle = video.title;
       this.editTags = video.tags.join(", ");
       this.editCategory = video.category || "Uncategorized";
+      this.editSubcategory = video.subcategory || "";
       this.customCategory = false;
+      this.customSubcategory = false;
       this.message = "";
+      this.categoryUnlockMessage = "";
       if (updateRoute) {
-        this.$router.push({
-          name: "media",
-          params: { category: this.selectedCategory, id: video.id },
-        });
+        this.pushMediaRoute(video);
       }
       if (video.media_type === "image") {
         this.$nextTick(() => this.scheduleImageAdvance());
       }
+    },
+    pushMediaRoute(video) {
+      const category = video.category || "Uncategorized";
+      const subcategory = video.subcategory || "";
+      if (subcategory) {
+        this.$router.push({
+          name: "subcategory-media",
+          params: { category, subcategory, id: video.id },
+        });
+        return;
+      }
+      this.$router.push({
+        name: "media",
+        params: { category, id: video.id },
+      });
     },
     showBanner(message, type = "success") {
       this.bannerMessage = message;
@@ -596,6 +776,77 @@ export default {
       this.customCategory = false;
       if (!this.categories.includes(this.editCategory)) {
         this.editCategory = this.categories[0] || "Uncategorized";
+      }
+      if (this.editCategory === "Uncategorized") {
+        this.editSubcategory = "";
+        this.customSubcategory = false;
+      }
+    },
+    enableCustomSubcategory() {
+      if (this.editCategory === "Uncategorized") return;
+      this.customSubcategory = true;
+      this.$nextTick(() => {
+        const input = document.getElementById("subcategory");
+        if (input) input.focus();
+      });
+    },
+    useExistingSubcategory() {
+      this.customSubcategory = false;
+      if (!this.editorSubcategories.includes(this.editSubcategory)) {
+        this.editSubcategory = "";
+      }
+    },
+    async unlockSelectedCategory() {
+      if (!this.selectedCategory || !this.isSelectedCategoryLocked) return;
+      this.categoryUnlocking = true;
+      this.categoryUnlockMessage = "";
+      this.message = "";
+      try {
+        await this.api("/api/categories/unlock", {
+          method: "POST",
+          body: JSON.stringify({
+            category: this.selectedCategory,
+            password: this.categoryPassword,
+          }),
+        });
+        this.categoryPassword = "";
+        await this.loadLibrary();
+        this.showBanner("Category unlocked.");
+      } catch (error) {
+        this.categoryUnlockMessage = error.message;
+        this.showBanner(error.message, "error");
+      } finally {
+        this.categoryUnlocking = false;
+      }
+    },
+    async relockSelectedCategory() {
+      if (!this.selectedCategory || !this.isSelectedCategoryLocked) return;
+      this.categoryUnlocking = true;
+      this.categoryUnlockMessage = "";
+      this.clearImageAdvanceTimer();
+      try {
+        await this.api("/api/categories/lock", {
+          method: "POST",
+          body: JSON.stringify({ category: this.selectedCategory }),
+        });
+        await this.loadLibrary();
+        this.selected = null;
+        if (this.$route.name === "media" || this.$route.name === "subcategory-media") {
+          if (this.selectedSubcategory) {
+            this.$router.push({
+              name: "subcategory",
+              params: { category: this.selectedCategory, subcategory: this.selectedSubcategory },
+            });
+          } else {
+            this.$router.push({ name: "category", params: { category: this.selectedCategory } });
+          }
+        }
+        this.showBanner("Category locked.");
+      } catch (error) {
+        this.categoryUnlockMessage = error.message;
+        this.showBanner(error.message, "error");
+      } finally {
+        this.categoryUnlocking = false;
       }
     },
     requestRenameCategory(category) {
@@ -704,13 +955,17 @@ export default {
             title: this.editTitle,
             tags: this.editTags,
             category: this.editCategory,
+            subcategory: this.editSubcategory,
           }),
         });
         const index = this.videos.findIndex((video) => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
         await this.loadCategories();
         const updatedCategory = updated.category || "Uncategorized";
-        const movedOutOfCurrentCategory = updatedCategory !== currentCategory;
+        const updatedSubcategory = updated.subcategory || "";
+        const movedOutOfCurrentCategory =
+          updatedCategory !== currentCategory ||
+          updatedSubcategory !== this.selectedSubcategory;
         this.selectedCategory = currentCategory;
         if (movedOutOfCurrentCategory) {
           const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
@@ -719,7 +974,14 @@ export default {
           } else {
             this.clearImageAdvanceTimer();
             this.selected = null;
-            this.$router.push({ name: "category", params: { category: currentCategory } });
+            if (this.selectedSubcategory) {
+              this.$router.push({
+                name: "subcategory",
+                params: { category: currentCategory, subcategory: this.selectedSubcategory },
+              });
+            } else {
+              this.$router.push({ name: "category", params: { category: currentCategory } });
+            }
           }
         } else {
           this.selectVideo(updated);
@@ -765,7 +1027,14 @@ export default {
           this.clearImageAdvanceTimer();
           this.selected = null;
           if (this.categories.includes(this.selectedCategory)) {
-            this.$router.push({ name: "category", params: { category: this.selectedCategory } });
+            if (this.selectedSubcategory) {
+              this.$router.push({
+                name: "subcategory",
+                params: { category: this.selectedCategory, subcategory: this.selectedSubcategory },
+              });
+            } else {
+              this.$router.push({ name: "category", params: { category: this.selectedCategory } });
+            }
           } else {
             this.$router.push({ name: "categories" });
           }

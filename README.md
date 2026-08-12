@@ -39,6 +39,17 @@ VIDEO_ROOT=/path/to/videos APP_PASSWORD='change-me' go run .
 
 If `APP_PASSWORD` is unset, password protection is disabled.
 
+Set `APP_LOCKED_CATEGORIES` to require an extra password for specific categories after the main app login. Use `category=password` pairs separated by semicolons:
+
+```bash
+VIDEO_ROOT=/path/to/videos \
+APP_PASSWORD='main-login' \
+APP_LOCKED_CATEGORIES='private=vault;family=second-secret' \
+go run .
+```
+
+Locked categories still appear in the category grid, but their media list, thumbnails, and streams stay blocked until the extra category password is entered. Locked category names are environment-driven, so renaming a locked category is intentionally blocked.
+
 Install `ffmpeg` if you want generated thumbnails for videos:
 
 ```bash

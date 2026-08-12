@@ -89,7 +89,7 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Added != 3 || result.Found != 3 {
+	if result.Added != 4 || result.Found != 4 {
 		t.Fatalf("unexpected scan result: %+v", result)
 	}
 
@@ -104,14 +104,18 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if err := json.NewDecoder(listRes.Body).Decode(&videos); err != nil {
 		t.Fatal(err)
 	}
-	if len(videos) != 3 {
+	if len(videos) != 4 {
 		t.Fatalf("unexpected videos: %+v", videos)
 	}
 	categories := map[string]bool{}
 	mediaTypes := map[string]bool{}
+	var deepVideo video
 	for _, item := range videos {
 		categories[item.Category] = true
 		mediaTypes[item.MediaType] = true
+		if item.Filename == "deep.mp4" {
+			deepVideo = item
+		}
 		if item.ThumbnailURL == "" {
 			t.Fatalf("thumbnail url missing: %+v", item)
 		}
@@ -124,6 +128,9 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	}
 	if !categories["Uncategorized"] || !categories["nested"] {
 		t.Fatalf("unexpected categories: %+v", videos)
+	}
+	if deepVideo.Subcategory != "deeper" {
+		t.Fatalf("expected deep.mp4 to be indexed under subcategory: %+v", deepVideo)
 	}
 	if got := strings.Join(categoryNames(t, db), ","); got != "nested,Uncategorized" {
 		t.Fatalf("unexpected category records after scan: %s", got)
@@ -143,7 +150,7 @@ func TestScanAndUpdateVideo(t *testing.T) {
 		t.Fatalf("demo.mp4 not found: %+v", videos)
 	}
 
-	body := bytes.NewBufferString(`{"title":"Demo Clip","tags":"test, sample, test","category":"moved"}`)
+	body := bytes.NewBufferString(`{"title":"Demo Clip","tags":"test, sample, test","category":"moved","subcategory":"clips"}`)
 	updateReq := httptest.NewRequest(http.MethodPatch, "/api/videos/1", body)
 	updateReq.SetPathValue("id", strconv.FormatInt(demoID, 10))
 	updateRes := httptest.NewRecorder()
@@ -156,10 +163,10 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Title != "Demo Clip" || len(updated.Tags) != 2 || updated.Category != "moved" {
+	if updated.Title != "Demo Clip" || len(updated.Tags) != 2 || updated.Category != "moved" || updated.Subcategory != "clips" {
 		t.Fatalf("unexpected updated video: %+v", updated)
 	}
-	if _, err := os.Stat(filepath.Join(root, "moved", "demo.mp4")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "moved", "clips", "demo.mp4")); err != nil {
 		t.Fatalf("moved file not found: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "demo.mp4")); !os.IsNotExist(err) {
@@ -191,6 +198,12 @@ func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "travel", "trip.jpg"), []byte("image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(root, "travel", "europe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "travel", "europe", "paris.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	srv := &server{db: db}
 	if _, err := srv.scanFolder(root); err != nil {
@@ -214,8 +227,14 @@ func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	if len(categories) != 2 {
 		t.Fatalf("unexpected categories: %+v", categories)
 	}
-	if categories[0].Name != "travel" || categories[0].Count != 1 || categories[0].LastReproduced == nil || *categories[0].LastReproduced != "2026-08-04 12:34:56" {
+	if categories[0].Name != "travel" || categories[0].Count != 2 || categories[0].LastReproduced == nil || *categories[0].LastReproduced != "2026-08-04 12:34:56" {
 		t.Fatalf("unexpected first category: %+v", categories[0])
+	}
+	if categories[0].DirectCount != 1 || len(categories[0].Subcategories) != 1 {
+		t.Fatalf("unexpected travel category nesting: %+v", categories[0])
+	}
+	if categories[0].Subcategories[0].Name != "europe" || categories[0].Subcategories[0].Count != 1 {
+		t.Fatalf("unexpected subcategory summary: %+v", categories[0].Subcategories)
 	}
 	if categories[1].Name != "Uncategorized" || categories[1].Count != 1 {
 		t.Fatalf("unexpected second category: %+v", categories[1])
@@ -258,6 +277,137 @@ func TestPasswordAuthProtectsRoutes(t *testing.T) {
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
 		t.Fatalf("authenticated status = %d", res.Code)
+	}
+}
+
+func TestLockedCategoriesRequireExtraPassword(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "public.mp4"), []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "private", "secret.mp4"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{
+		db:               db,
+		lockedCategories: map[string]string{"private": "vault"},
+	}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+	visible, err := srv.queryVideos("SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos ORDER BY id ASC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lockedID int64
+	for _, item := range visible {
+		if item.Category == "private" {
+			lockedID = item.ID
+			break
+		}
+	}
+	if lockedID == 0 {
+		t.Fatal("locked video not found")
+	}
+
+	mux := srv.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/categories", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("categories status = %d", res.Code)
+	}
+
+	var categories []categorySummary
+	if err := json.NewDecoder(res.Body).Decode(&categories); err != nil {
+		t.Fatal(err)
+	}
+	var privateCategory categorySummary
+	for _, item := range categories {
+		if item.Name == "private" {
+			privateCategory = item
+			break
+		}
+	}
+	if !privateCategory.Locked || privateCategory.Unlocked {
+		t.Fatalf("unexpected private category flags: %+v", privateCategory)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/videos", nil)
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("videos status = %d", res.Code)
+	}
+
+	var videos []video
+	if err := json.NewDecoder(res.Body).Decode(&videos); err != nil {
+		t.Fatal(err)
+	}
+	if len(videos) != 1 || videos[0].Category != "Uncategorized" {
+		t.Fatalf("unexpected visible videos before unlock: %+v", videos)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/media/%d", lockedID), nil)
+	req.SetPathValue("id", strconv.FormatInt(lockedID, 10))
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("locked media status before unlock = %d", res.Code)
+	}
+
+	body := bytes.NewBufferString(`{"category":"private","password":"vault"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/categories/unlock", body)
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("unlock status = %d body = %s", res.Code, res.Body.String())
+	}
+	unlockCookies := res.Result().Cookies()
+	if len(unlockCookies) == 0 {
+		t.Fatal("expected unlock cookie")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/videos", nil)
+	for _, cookie := range unlockCookies {
+		req.AddCookie(cookie)
+	}
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("videos status after unlock = %d", res.Code)
+	}
+	if err := json.NewDecoder(res.Body).Decode(&videos); err != nil {
+		t.Fatal(err)
+	}
+	if len(videos) != 2 {
+		t.Fatalf("unexpected visible videos after unlock: %+v", videos)
+	}
+
+	body = bytes.NewBufferString(`{"category":"private"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/categories/lock", body)
+	for _, cookie := range unlockCookies {
+		req.AddCookie(cookie)
+	}
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("lock status = %d body = %s", res.Code, res.Body.String())
 	}
 }
 
@@ -482,7 +632,7 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 
 	var item video
 	err = db.QueryRow(
-		"SELECT id, path, root, relative_path, category, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos WHERE filename = ?",
+		"SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos WHERE filename = ?",
 		"clip.mp4",
 	).Scan(
 		&item.ID,
@@ -490,6 +640,7 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 		&item.Root,
 		&item.RelativePath,
 		&item.Category,
+		&item.Subcategory,
 		&item.MediaType,
 		&item.Filename,
 		&item.Title,
@@ -782,7 +933,7 @@ func TestScanUsesConfiguredRootOnly(t *testing.T) {
 		t.Fatalf("scan status = %d body = %s", res.Code, res.Body.String())
 	}
 
-	videos, err := srv.queryVideos("SELECT id, path, root, relative_path, category, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos")
+	videos, err := srv.queryVideos("SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos")
 	if err != nil {
 		t.Fatal(err)
 	}

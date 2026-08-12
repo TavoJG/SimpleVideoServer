@@ -262,6 +262,17 @@ label {
   font-size: 0.85rem;
 }
 
+.lock-indicator {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid rgba(17, 106, 91, 0.28);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.18rem 0.5rem;
+}
+
 .category-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -334,6 +345,22 @@ label {
   gap: 0.75rem;
   min-height: 0;
   padding: 0.8rem;
+}
+
+.category-lock-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.unlock-form {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--row);
+  padding: 0.9rem;
 }
 
 .back-button {
