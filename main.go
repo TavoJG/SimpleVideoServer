@@ -37,6 +37,7 @@ var imageExtensions = map[string]bool{
 }
 
 const uncategorizedCategory = "Uncategorized"
+const managedDirectoryMode = 0o2775
 
 type server struct {
 	db               *sql.DB
@@ -200,6 +201,7 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query("SELECT id, path, root FROM videos WHERE category = ?", category)
 	if err != nil {
+		log.Printf("delete category query failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not load category.")
 		return
 	}
@@ -215,6 +217,7 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item categoryItem
 		if err := rows.Scan(&item.id, &item.path, &item.root); err != nil {
+			log.Printf("delete category scan failed: category=%q err=%v", category, err)
 			writeError(w, http.StatusInternalServerError, "Could not load category.")
 			return
 		}
@@ -222,6 +225,7 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 		roots[item.root] = true
 	}
 	if err := rows.Err(); err != nil {
+		log.Printf("delete category rows iteration failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not load category.")
 		return
 	}
@@ -232,6 +236,7 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 
 	for _, item := range items {
 		if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("delete category file removal failed: category=%q video_id=%d path=%q err=%v", category, item.id, item.path, err)
 			writeError(w, http.StatusInternalServerError, "Could not delete category media files.")
 			return
 		}
@@ -239,6 +244,7 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.db.Begin()
 	if err != nil {
+		log.Printf("delete category begin tx failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
 		return
 	}
@@ -246,19 +252,23 @@ func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 
 	result, err := tx.Exec("DELETE FROM videos WHERE category = ?", category)
 	if err != nil {
+		log.Printf("delete category videos delete failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
 		return
 	}
 	deleted, err := result.RowsAffected()
 	if err != nil {
+		log.Printf("delete category rows affected failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
 		return
 	}
 	if _, err := tx.Exec("DELETE FROM categories WHERE name = ?", category); err != nil {
+		log.Printf("delete category category row delete failed: category=%q err=%v", category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
 		return
 	}
 	if err := tx.Commit(); err != nil {
+		log.Printf("delete category commit failed: category=%q deleted=%d err=%v", category, deleted, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
 		return
 	}
@@ -894,6 +904,7 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		log.Printf("delete video query failed: video_id=%d err=%v", id, err)
 		writeError(w, http.StatusInternalServerError, "Could not load media.")
 		return
 	}
@@ -902,12 +913,14 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := os.Remove(item.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("delete video file removal failed: video_id=%d category=%q path=%q err=%v", id, item.Category, item.Path, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media file.")
 		return
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
+		log.Printf("delete video begin tx failed: video_id=%d category=%q err=%v", id, item.Category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
 		return
 	}
@@ -915,11 +928,13 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 
 	result, err := tx.Exec("DELETE FROM videos WHERE id = ?", id)
 	if err != nil {
+		log.Printf("delete video row delete failed: video_id=%d category=%q err=%v", id, item.Category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
 		return
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
+		log.Printf("delete video rows affected failed: video_id=%d category=%q err=%v", id, item.Category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
 		return
 	}
@@ -928,10 +943,12 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := deleteCategoryIfUnusedTx(tx, item.Category); err != nil {
+		log.Printf("delete video cleanup category failed: video_id=%d category=%q err=%v", id, item.Category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
 		return
 	}
 	if err := tx.Commit(); err != nil {
+		log.Printf("delete video commit failed: video_id=%d category=%q err=%v", id, item.Category, err)
 		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
 		return
 	}
@@ -1043,6 +1060,9 @@ func (s *server) renameCategory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "Could not rename category folder.")
 			return
 		}
+		if err := normalizeManagedDirectoryTree(toDir); err != nil {
+			log.Printf("rename category permission normalization failed: from=%q to=%q root=%q err=%v", from, to, root, err)
+		}
 		renamedRoots = append(renamedRoots, root)
 	}
 
@@ -1098,8 +1118,19 @@ func moveVideoToLocation(item video, requestedCategory string, requestedSubcateg
 	}
 
 	targetDir := locationDirectory(item.Root, category, subcategory)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return video{}, fmt.Errorf("could not create category folder: %w", err)
+	if category != uncategorizedCategory {
+		if err := ensureManagedDirectory(locationDirectory(item.Root, category, "")); err != nil {
+			return video{}, fmt.Errorf("could not create category folder: %w", err)
+		}
+	}
+	if subcategory != "" {
+		if err := ensureManagedDirectory(targetDir); err != nil {
+			return video{}, fmt.Errorf("could not create category folder: %w", err)
+		}
+	} else if category == uncategorizedCategory {
+		if err := os.MkdirAll(targetDir, managedDirectoryMode); err != nil {
+			return video{}, fmt.Errorf("could not create category folder: %w", err)
+		}
 	}
 
 	targetPath := uniqueTargetPath(targetDir, item.Filename)
@@ -1114,6 +1145,31 @@ func moveVideoToLocation(item video, requestedCategory string, requestedSubcateg
 	item.RelativePath = buildRelativePath(category, subcategory, item.Filename)
 	item.StreamURL = fmt.Sprintf("/media/%d", item.ID)
 	return item, nil
+}
+
+func ensureManagedDirectory(path string) error {
+	if err := os.MkdirAll(path, managedDirectoryMode); err != nil {
+		return fmt.Errorf("mkdir %s: %w", path, err)
+	}
+	if err := os.Chmod(path, managedDirectoryMode); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
+func normalizeManagedDirectoryTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if err := os.Chmod(path, managedDirectoryMode); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 func normalizeCategory(value string) (string, error) {

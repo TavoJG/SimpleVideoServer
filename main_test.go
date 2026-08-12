@@ -17,6 +17,21 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func assertManagedDirectoryMode(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", path)
+	}
+	if info.Mode().Perm() != 0o775 {
+		t.Fatalf("directory %s permissions = %#o, want %#o", path, info.Mode().Perm(), os.FileMode(0o775))
+	}
+}
+
 func categoryNames(t *testing.T, db *sql.DB) []string {
 	t.Helper()
 
@@ -169,6 +184,8 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "moved", "clips", "demo.mp4")); err != nil {
 		t.Fatalf("moved file not found: %v", err)
 	}
+	assertManagedDirectoryMode(t, filepath.Join(root, "moved"))
+	assertManagedDirectoryMode(t, filepath.Join(root, "moved", "clips"))
 	if _, err := os.Stat(filepath.Join(root, "demo.mp4")); !os.IsNotExist(err) {
 		t.Fatalf("old file still exists or stat failed unexpectedly: %v", err)
 	}
@@ -626,6 +643,7 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "new", "clip.mp4")); err != nil {
 		t.Fatalf("renamed file not found: %v", err)
 	}
+	assertManagedDirectoryMode(t, filepath.Join(root, "new"))
 	if _, err := os.Stat(filepath.Join(root, "old")); !os.IsNotExist(err) {
 		t.Fatalf("old category folder still exists or stat failed unexpectedly: %v", err)
 	}
@@ -670,6 +688,45 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 	if got := strings.Join(categoryNames(t, db), ","); got != "new,Uncategorized" {
 		t.Fatalf("unexpected category records after rename: %s", got)
 	}
+}
+
+func TestRenameCategoryNormalizesNestedDirectoryPermissions(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "old", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old", "nested", "clip.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"from":"old","to":"new"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/rename", body)
+	res := httptest.NewRecorder()
+	srv.routes().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("rename nested status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	assertManagedDirectoryMode(t, filepath.Join(root, "new"))
+	assertManagedDirectoryMode(t, filepath.Join(root, "new", "nested"))
 }
 
 func TestRenameCategoryRejectsUncategorized(t *testing.T) {
