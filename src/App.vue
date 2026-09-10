@@ -51,6 +51,28 @@
           </select>
         </div>
 
+        <div v-if="!showCategoryGrid" class="filter-control">
+          <label for="sort-mode">Sort</label>
+          <select id="sort-mode" :value="sortMode" @change="setSortMode($event.target.value)">
+            <option value="library">Library order</option>
+            <option value="title">Title</option>
+            <option value="filename">Filename</option>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="size">Size</option>
+            <option value="last_played">Last played</option>
+          </select>
+        </div>
+
+        <div v-if="!showCategoryGrid" class="quick-views" aria-label="Library views">
+          <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
+          <button type="button" :class="{ active: viewMode === 'continue' }" @click="setViewMode('continue')">Continue</button>
+          <button type="button" :class="{ active: viewMode === 'recent_played' }" @click="setViewMode('recent_played')">Played</button>
+          <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
+          <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
+          <button type="button" :class="{ active: viewMode === 'watch_later' }" @click="setViewMode('watch_later')">Watch Later</button>
+        </div>
+
         <div v-if="showCategoryGrid" class="category-menu">
           <nav class="category-grid" aria-label="Categories">
             <div
@@ -180,9 +202,34 @@
                 </span>
                 <span class="video-row-content">
                   <span class="video-title">{{ video.title }}</span>
-                  <span class="media-type">{{ video.media_type }}</span>
+                  <span class="media-badges">
+                    <span class="media-type">{{ video.media_type }}</span>
+                    <span v-if="isContinueEligible(video)" class="media-type">resume {{ formatDuration(video.playback_position_seconds) }}</span>
+                    <span v-if="video.favorited" class="media-type">favorite</span>
+                    <span v-if="video.watch_later" class="media-type">later</span>
+                  </span>
                   <span class="video-path">{{ video.relative_path }}</span>
                   <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
+                </span>
+                <span class="row-actions" @click.stop>
+                  <button
+                    class="icon-button compact"
+                    type="button"
+                    :title="video.favorited ? 'Remove favorite' : 'Add favorite'"
+                    :aria-label="video.favorited ? 'Remove favorite' : 'Add favorite'"
+                    @click="toggleVideoFlag(video, 'favorited')"
+                  >
+                    {{ video.favorited ? "★" : "☆" }}
+                  </button>
+                  <button
+                    class="icon-button compact"
+                    type="button"
+                    :title="video.watch_later ? 'Remove from Watch Later' : 'Add to Watch Later'"
+                    :aria-label="video.watch_later ? 'Remove from Watch Later' : 'Add to Watch Later'"
+                    @click="toggleVideoFlag(video, 'watch_later')"
+                  >
+                    ◷
+                  </button>
                 </span>
               </button>
               <p v-if="!canViewSelectedCategory" class="message">Unlock this category to view its media.</p>
@@ -207,12 +254,17 @@
             </button>
             <video
               v-if="selected.media_type === 'video'"
+              ref="player"
               class="player"
               :src="selected.stream_url"
               controls
               autoplay
               playsinline
               webkit-playsinline
+              @loadedmetadata="resumeSelectedPlayback"
+              @timeupdate="savePlaybackProgress()"
+              @pause="savePlaybackProgress(true)"
+              @ended="handlePlaybackEnded"
             ></video>
             <img
               v-else
@@ -332,6 +384,14 @@
                 <span>{{ selected.filename }}</span>
                 <span>{{ formatBytes(selected.size_bytes) }}</span>
               </div>
+              <label class="toggle-control">
+                <input v-model="editFavorited" type="checkbox" />
+                Favorite
+              </label>
+              <label class="toggle-control">
+                <input v-model="editWatchLater" type="checkbox" />
+                Watch Later
+              </label>
               <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
                 {{ deleting ? "Deleting" : "Delete" }}
               </button>
@@ -484,6 +544,8 @@ export default {
       editTags: "",
       editCategory: "",
       editSubcategory: "",
+      editFavorited: false,
+      editWatchLater: false,
       customCategory: false,
       customSubcategory: false,
       configuredRoot: "",
@@ -496,6 +558,8 @@ export default {
       loggingIn: false,
       query: "",
       mediaFilter: "all",
+      sortMode: "library",
+      viewMode: "category",
       selectedCategory: "Uncategorized",
       selectedSubcategory: "",
       message: "",
@@ -517,6 +581,7 @@ export default {
       categoryPassword: "",
       categoryUnlocking: false,
       categoryUnlockMessage: "",
+      lastPlaybackSaveAt: 0,
     };
   },
   computed: {
@@ -525,10 +590,22 @@ export default {
     },
     filteredVideos() {
       const query = this.query.trim().toLowerCase();
-      return this.videos.filter((video) => {
+      const filtered = this.videos.filter((video) => {
         const category = video.category || "Uncategorized";
-        if (category !== this.selectedCategory) return false;
-        if (this.selectedSubcategory && (video.subcategory || "") !== this.selectedSubcategory) return false;
+        if (this.viewMode === "category") {
+          if (category !== this.selectedCategory) return false;
+          if (this.selectedSubcategory && (video.subcategory || "") !== this.selectedSubcategory) return false;
+        } else if (this.viewMode === "favorites") {
+          if (!video.favorited) return false;
+        } else if (this.viewMode === "watch_later") {
+          if (!video.watch_later) return false;
+        } else if (this.viewMode === "continue") {
+          if (!this.isContinueEligible(video)) return false;
+        } else if (this.viewMode === "recent_played") {
+          if (!video.last_played_at) return false;
+        } else if (this.viewMode === "recent_added") {
+          if (!video.created_at) return false;
+        }
         if (this.mediaFilter === "images" && video.media_type !== "image") return false;
         if (this.mediaFilter === "videos" && video.media_type !== "video") return false;
         if (!query) return true;
@@ -545,6 +622,7 @@ export default {
           .toLowerCase();
         return haystack.includes(query);
       });
+      return this.sortVideos(filtered);
     },
     categorySummaries() {
       return this.categorySummariesData;
@@ -559,6 +637,14 @@ export default {
       return this.selectedCategorySummary?.subcategories || [];
     },
     selectedCategoryLabel() {
+      const labels = {
+        favorites: "Favorites",
+        watch_later: "Watch Later",
+        continue: "Continue Watching",
+        recent_played: "Recently Played",
+        recent_added: "Recently Added",
+      };
+      if (this.viewMode !== "category") return labels[this.viewMode] || "Library";
       return this.selectedSubcategory ? `${this.selectedCategory} / ${this.selectedSubcategory}` : this.selectedCategory;
     },
     editorSubcategories() {
@@ -629,6 +715,18 @@ export default {
       });
     },
     mediaFilter() {
+      if (this.showCategoryGrid) return;
+      this.$nextTick(() => {
+        this.ensureSelectedInFilteredList();
+      });
+    },
+    sortMode() {
+      if (this.showCategoryGrid) return;
+      this.$nextTick(() => {
+        this.ensureSelectedInFilteredList();
+      });
+    },
+    viewMode() {
       if (this.showCategoryGrid) return;
       this.$nextTick(() => {
         this.ensureSelectedInFilteredList();
@@ -729,11 +827,14 @@ export default {
     syncRouteState() {
       if (!this.authenticated) return;
       this.mediaFilter = this.normalizeMediaFilter(this.$route.query.type);
+      this.sortMode = this.normalizeSortMode(this.$route.query.sort);
+      this.viewMode = this.normalizeViewMode(this.$route.query.view);
       if (this.$route.name === "categories") {
         this.selected = null;
         this.selectedSubcategory = "";
         this.categoryPassword = "";
         this.categoryUnlockMessage = "";
+        this.viewMode = "category";
         return;
       }
 
@@ -770,13 +871,31 @@ export default {
     normalizeMediaFilter(value) {
       return value === "images" || value === "videos" ? value : "all";
     },
-    routeQueryWithMediaFilter(filter = this.mediaFilter) {
+    normalizeSortMode(value) {
+      return ["library", "title", "filename", "newest", "oldest", "size", "last_played"].includes(value) ? value : "library";
+    },
+    normalizeViewMode(value) {
+      return ["category", "favorites", "watch_later", "continue", "recent_played", "recent_added"].includes(value) ? value : "category";
+    },
+    routeQueryWithMediaFilter(filter = this.mediaFilter, sort = this.sortMode, view = this.viewMode) {
       const normalized = this.normalizeMediaFilter(filter);
       const query = { ...this.$route.query };
       if (normalized === "all") {
         delete query.type;
       } else {
         query.type = normalized;
+      }
+      const normalizedSort = this.normalizeSortMode(sort);
+      if (normalizedSort === "library") {
+        delete query.sort;
+      } else {
+        query.sort = normalizedSort;
+      }
+      const normalizedView = this.normalizeViewMode(view);
+      if (normalizedView === "category" || this.$route.name === "categories") {
+        delete query.view;
+      } else {
+        query.view = normalizedView;
       }
       return query;
     },
@@ -789,6 +908,22 @@ export default {
         name: this.$route.name,
         params: this.$route.params,
         query: this.routeQueryWithMediaFilter(normalized),
+      });
+    },
+    setSortMode(sort) {
+      const normalized = this.normalizeSortMode(sort);
+      this.$router.push({
+        name: this.$route.name,
+        params: this.$route.params,
+        query: this.routeQueryWithMediaFilter(this.mediaFilter, normalized),
+      });
+    },
+    setViewMode(view) {
+      const normalized = this.normalizeViewMode(view);
+      this.$router.push({
+        name: this.$route.name,
+        params: this.$route.params,
+        query: this.routeQueryWithMediaFilter(this.mediaFilter, this.sortMode, normalized),
       });
     },
     selectCategory(category) {
@@ -819,8 +954,11 @@ export default {
       this.editTags = video.tags.join(", ");
       this.editCategory = video.category || "Uncategorized";
       this.editSubcategory = video.subcategory || "";
+      this.editFavorited = Boolean(video.favorited);
+      this.editWatchLater = Boolean(video.watch_later);
       this.customCategory = false;
       this.customSubcategory = false;
+      this.lastPlaybackSaveAt = 0;
       this.message = "";
       this.categoryUnlockMessage = "";
       if (updateRoute) {
@@ -884,6 +1022,119 @@ export default {
       if (!this.selected) return;
       const previous = this.selectedIndex > 0 ? this.filteredVideos[this.selectedIndex - 1] : null;
       if (previous) this.selectVideo(previous);
+    },
+    sortVideos(items) {
+      const sorted = [...items];
+      const textCompare = (a, b, field) => String(a[field] || "").localeCompare(String(b[field] || ""), undefined, { sensitivity: "base" });
+      const timeValue = (value) => {
+        const time = Date.parse(value || "");
+        return Number.isNaN(time) ? 0 : time;
+      };
+      if (this.sortMode === "title") {
+        sorted.sort((a, b) => textCompare(a, b, "title"));
+      } else if (this.sortMode === "filename") {
+        sorted.sort((a, b) => textCompare(a, b, "filename"));
+      } else if (this.sortMode === "newest") {
+        sorted.sort((a, b) => timeValue(b.created_at) - timeValue(a.created_at));
+      } else if (this.sortMode === "oldest") {
+        sorted.sort((a, b) => timeValue(a.created_at) - timeValue(b.created_at));
+      } else if (this.sortMode === "size") {
+        sorted.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+      } else if (this.sortMode === "last_played") {
+        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
+      }
+      if (this.viewMode === "continue") {
+        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
+      } else if (this.viewMode === "recent_played") {
+        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
+      } else if (this.viewMode === "recent_added" && this.sortMode === "library") {
+        sorted.sort((a, b) => timeValue(b.created_at) - timeValue(a.created_at));
+      }
+      return sorted;
+    },
+    isContinueEligible(video) {
+      if (!video || video.media_type !== "video") return false;
+      const position = Number(video.playback_position_seconds) || 0;
+      const duration = Number(video.duration_seconds) || 0;
+      if (position <= 10) return false;
+      return !duration || position < duration - 5;
+    },
+    formatDuration(seconds) {
+      const value = Math.max(0, Math.floor(Number(seconds) || 0));
+      const minutes = Math.floor(value / 60);
+      const remaining = value % 60;
+      return `${minutes}:${String(remaining).padStart(2, "0")}`;
+    },
+    async persistVideoMetadata(video, patch) {
+      const updated = await this.api(`/api/videos/${video.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: video.title,
+          tags: video.tags,
+          category: video.category || "Uncategorized",
+          subcategory: video.subcategory || "",
+          favorited: video.favorited,
+          watch_later: video.watch_later,
+          ...patch,
+        }),
+      });
+      const index = this.videos.findIndex((item) => item.id === updated.id);
+      if (index >= 0) this.videos.splice(index, 1, updated);
+      if (this.selected && this.selected.id === updated.id) {
+        this.selectVideo(updated, false);
+      }
+      await this.loadCategories();
+      return updated;
+    },
+    async toggleVideoFlag(video, field) {
+      const original = Boolean(video[field]);
+      video[field] = !original;
+      try {
+        const updated = await this.persistVideoMetadata(video, { [field]: video[field] });
+        this.showBanner(updated[field] ? "Saved to library." : "Removed from library view.");
+      } catch (error) {
+        video[field] = original;
+        this.showBanner(error.message, "error");
+      }
+    },
+    resumeSelectedPlayback(event) {
+      if (!this.selected || this.selected.media_type !== "video") return;
+      const player = event?.target || this.$refs.player;
+      if (!player || !this.isContinueEligible(this.selected)) return;
+      const position = Number(this.selected.playback_position_seconds) || 0;
+      if (position > 0 && position < player.duration - 5) {
+        player.currentTime = position;
+      }
+    },
+    async savePlaybackProgress(force = false) {
+      if (!this.selected || this.selected.media_type !== "video") return;
+      const player = this.$refs.player;
+      if (!player || !Number.isFinite(player.currentTime)) return;
+      const now = Date.now();
+      if (!force && now - this.lastPlaybackSaveAt < 10000) return;
+      this.lastPlaybackSaveAt = now;
+      const duration = Number.isFinite(player.duration) ? player.duration : 0;
+      const position = duration && player.currentTime >= duration - 5 ? 0 : player.currentTime;
+      try {
+        const updated = await this.api(`/api/videos/${this.selected.id}/playback`, {
+          method: "POST",
+          body: JSON.stringify({
+            position_seconds: position,
+            duration_seconds: duration,
+            played: true,
+          }),
+        });
+        const index = this.videos.findIndex((video) => video.id === updated.id);
+        if (index >= 0) this.videos.splice(index, 1, updated);
+        if (this.selected && this.selected.id === updated.id) this.selected = updated;
+        await this.loadCategories();
+      } catch (error) {
+        this.showBanner(error.message, "error");
+      }
+    },
+    async handlePlaybackEnded() {
+      await this.savePlaybackProgress(true);
+      this.playNextMedia();
     },
     hideThumbnail(event) {
       event.target.hidden = true;
@@ -1116,6 +1367,8 @@ export default {
             tags: this.editTags,
             category: this.editCategory,
             subcategory: this.editSubcategory,
+            favorited: this.editFavorited,
+            watch_later: this.editWatchLater,
           }),
         });
         const index = this.videos.findIndex((video) => video.id === updated.id);

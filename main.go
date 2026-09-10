@@ -49,21 +49,27 @@ type server struct {
 }
 
 type video struct {
-	ID           int64    `json:"id"`
-	Path         string   `json:"path"`
-	Root         string   `json:"root"`
-	RelativePath string   `json:"relative_path"`
-	Category     string   `json:"category"`
-	Subcategory  string   `json:"subcategory"`
-	MediaType    string   `json:"media_type"`
-	Filename     string   `json:"filename"`
-	Title        string   `json:"title"`
-	Tags         []string `json:"tags"`
-	SizeBytes    int64    `json:"size_bytes"`
-	Mtime        float64  `json:"mtime"`
-	Missing      bool     `json:"missing"`
-	StreamURL    string   `json:"stream_url"`
-	ThumbnailURL string   `json:"thumbnail_url"`
+	ID                      int64    `json:"id"`
+	Path                    string   `json:"path"`
+	Root                    string   `json:"root"`
+	RelativePath            string   `json:"relative_path"`
+	Category                string   `json:"category"`
+	Subcategory             string   `json:"subcategory"`
+	MediaType               string   `json:"media_type"`
+	Filename                string   `json:"filename"`
+	Title                   string   `json:"title"`
+	Tags                    []string `json:"tags"`
+	SizeBytes               int64    `json:"size_bytes"`
+	Mtime                   float64  `json:"mtime"`
+	Missing                 bool     `json:"missing"`
+	CreatedAt               string   `json:"created_at"`
+	LastPlayedAt            *string  `json:"last_played_at"`
+	PlaybackPositionSeconds float64  `json:"playback_position_seconds"`
+	DurationSeconds         float64  `json:"duration_seconds"`
+	Favorited               bool     `json:"favorited"`
+	WatchLater              bool     `json:"watch_later"`
+	StreamURL               string   `json:"stream_url"`
+	ThumbnailURL            string   `json:"thumbnail_url"`
 }
 
 type categorySummary struct {
@@ -104,6 +110,14 @@ type updateVideoRequest struct {
 	Tags        interface{} `json:"tags"`
 	Category    *string     `json:"category"`
 	Subcategory *string     `json:"subcategory"`
+	Favorited   *bool       `json:"favorited"`
+	WatchLater  *bool       `json:"watch_later"`
+}
+
+type playbackUpdateRequest struct {
+	PositionSeconds float64  `json:"position_seconds"`
+	DurationSeconds *float64 `json:"duration_seconds"`
+	Played          *bool    `json:"played"`
 }
 
 type renameCategoryRequest struct {
@@ -320,6 +334,11 @@ func initDB(db *sql.DB) error {
 			size_bytes INTEGER NOT NULL DEFAULT 0,
 			mtime REAL NOT NULL DEFAULT 0,
 			missing INTEGER NOT NULL DEFAULT 0,
+			playback_position_seconds REAL NOT NULL DEFAULT 0,
+			duration_seconds REAL NOT NULL DEFAULT 0,
+			last_played_at TEXT,
+			favorited INTEGER NOT NULL DEFAULT 0,
+			watch_later INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -347,6 +366,24 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "videos", "media_type", "TEXT NOT NULL DEFAULT 'video'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "playback_position_seconds", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "duration_seconds", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "last_played_at", "TEXT"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "favorited", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "watch_later", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "videos", "created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "categories", "last_reproduced", "TEXT"); err != nil {
@@ -752,7 +789,7 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern)
 	}
 
-	sqlQuery := "SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos"
+	sqlQuery := videoSelectSQL()
 	if len(where) > 0 {
 		sqlQuery += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -775,13 +812,22 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 func (s *server) videoItem(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/videos/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "delete") {
+	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "delete" && parts[1] != "playback") {
 		http.NotFound(w, r)
 		return
 	}
 	r.SetPathValue("id", parts[0])
 
 	if len(parts) == 2 {
+		if parts[1] == "playback" {
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
+				return
+			}
+			s.updatePlayback(w, r)
+			return
+		}
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
@@ -901,9 +947,19 @@ func (s *server) updateVideo(w http.ResponseWriter, r *http.Request) {
 	result, err := tx.Exec(
 		`UPDATE videos
 		SET title = ?, tags = ?, path = ?, relative_path = ?, category = ?, subcategory = ?, filename = ?,
+			favorited = ?, watch_later = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
-		title, tags, item.Path, item.RelativePath, item.Category, item.Subcategory, item.Filename, id,
+		title,
+		tags,
+		item.Path,
+		item.RelativePath,
+		item.Category,
+		item.Subcategory,
+		item.Filename,
+		boolToInt(boolValueOrDefault(req.Favorited, item.Favorited)),
+		boolToInt(boolValueOrDefault(req.WatchLater, item.WatchLater)),
+		id,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Could not update video.")
@@ -933,6 +989,75 @@ func (s *server) updateVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *server) updatePlayback(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	var req playbackUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		return
+	}
+	if req.PositionSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "Position must be zero or greater.")
+		return
+	}
+	if req.DurationSeconds != nil && *req.DurationSeconds < 0 {
+		writeError(w, http.StatusBadRequest, "Duration must be zero or greater.")
+		return
+	}
+
+	item, err := s.queryVideo(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load video.")
+		return
+	}
+	if !s.requireCategoryAccess(w, r, item.Category) {
+		return
+	}
+
+	duration := item.DurationSeconds
+	if req.DurationSeconds != nil {
+		duration = *req.DurationSeconds
+	}
+	played := true
+	if req.Played != nil {
+		played = *req.Played
+	}
+	lastPlayedSQL := "last_played_at"
+	if played {
+		lastPlayedSQL = "CURRENT_TIMESTAMP"
+	}
+
+	query := fmt.Sprintf(
+		`UPDATE videos
+		SET playback_position_seconds = ?, duration_seconds = ?, last_played_at = %s, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		lastPlayedSQL,
+	)
+	if _, err := s.db.Exec(query, req.PositionSeconds, duration, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not update playback.")
+		return
+	}
+
+	if played {
+		s.touchCategoryLastReproduced(item.Category)
+	}
+
+	updated, err := s.queryVideo(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Could not load updated video.")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
@@ -1928,7 +2053,7 @@ func upsertScannedVideo(tx *sql.Tx, root string, relativePath string, category s
 
 func (s *server) queryVideo(id int64) (video, error) {
 	videos, err := s.queryVideos(
-		"SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos WHERE id = ?",
+		videoSelectSQL()+" WHERE id = ?",
 		id,
 	)
 	if err != nil {
@@ -1938,6 +2063,12 @@ func (s *server) queryVideo(id int64) (video, error) {
 		return video{}, sql.ErrNoRows
 	}
 	return videos[0], nil
+}
+
+func videoSelectSQL() string {
+	return `SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags,
+		size_bytes, mtime, missing, created_at, last_played_at, playback_position_seconds, duration_seconds,
+		favorited, watch_later FROM videos`
 }
 
 func (s *server) queryVideos(query string, args ...interface{}) ([]video, error) {
@@ -1952,6 +2083,9 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 		var item video
 		var tags string
 		var missing int
+		var lastPlayedAt sql.NullString
+		var favorited int
+		var watchLater int
 		if err := rows.Scan(
 			&item.ID,
 			&item.Path,
@@ -1966,11 +2100,23 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 			&item.SizeBytes,
 			&item.Mtime,
 			&missing,
+			&item.CreatedAt,
+			&lastPlayedAt,
+			&item.PlaybackPositionSeconds,
+			&item.DurationSeconds,
+			&favorited,
+			&watchLater,
 		); err != nil {
 			return nil, err
 		}
 		item.Tags = splitTags(tags)
 		item.Missing = missing != 0
+		if lastPlayedAt.Valid {
+			value := lastPlayedAt.String
+			item.LastPlayedAt = &value
+		}
+		item.Favorited = favorited != 0
+		item.WatchLater = watchLater != 0
 		item.StreamURL = fmt.Sprintf("/media/%d", item.ID)
 		if item.MediaType == "image" {
 			item.ThumbnailURL = item.StreamURL
@@ -2047,6 +2193,20 @@ func splitTags(value string) []string {
 		}
 	}
 	return tags
+}
+
+func boolValueOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func expandHome(path string) string {

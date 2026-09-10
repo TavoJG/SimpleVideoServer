@@ -246,6 +246,29 @@ label {
   gap: 0.35rem;
 }
 
+.quick-views {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.quick-views button {
+  min-height: 2.3rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.quick-views button:hover,
+.quick-views button.active {
+  background: var(--row);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent-strong);
+}
+
 .selected-category-menu,
 .details-card {
   display: grid;
@@ -464,7 +487,7 @@ label {
 
 .video-row {
   display: grid;
-  grid-template-columns: 5.8rem minmax(0, 1fr);
+  grid-template-columns: 5.8rem minmax(0, 1fr) auto;
   gap: 0.7rem;
   width: 100%;
   border-radius: 8px;
@@ -540,6 +563,24 @@ label {
   line-height: 1;
   padding: 0.18rem 0.38rem;
   text-transform: uppercase;
+}
+
+.media-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.row-actions {
+  display: grid;
+  align-content: center;
+  gap: 0.35rem;
+}
+
+.icon-button.compact {
+  width: 2.1rem;
+  height: 2.1rem;
+  font-size: 0.98rem;
 }
 
 .video-path,
@@ -657,10 +698,24 @@ label {
 
 .details-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.5fr) minmax(180px, 0.5fr) auto auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.5fr) minmax(160px, 0.5fr) auto auto auto auto;
   gap: 0.8rem;
   align-items: end;
   padding: 1rem;
+}
+
+.toggle-control {
+  display: flex;
+  min-height: 2.78rem;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.toggle-control input {
+  width: auto;
 }
 
 .meta {
@@ -762,7 +817,7 @@ label {
   }
 
   .video-row {
-    grid-template-columns: 5rem minmax(0, 1fr);
+    grid-template-columns: 5rem minmax(0, 1fr) auto;
   }
 
   .thumbnail-frame {

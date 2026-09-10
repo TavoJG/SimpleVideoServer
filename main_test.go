@@ -207,6 +207,103 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	}
 }
 
+func TestVideoStateDefaultsAndUpdates(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "demo.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	videos, err := srv.queryVideos(videoSelectSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(videos) != 1 {
+		t.Fatalf("unexpected videos: %+v", videos)
+	}
+	item := videos[0]
+	if item.CreatedAt == "" || item.LastPlayedAt != nil || item.PlaybackPositionSeconds != 0 || item.DurationSeconds != 0 || item.Favorited || item.WatchLater {
+		t.Fatalf("unexpected default state: %+v", item)
+	}
+
+	body := bytes.NewBufferString(`{"title":"Demo","tags":[],"favorited":true,"watch_later":true}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/videos/1", body)
+	req.SetPathValue("id", strconv.FormatInt(item.ID, 10))
+	res := httptest.NewRecorder()
+	srv.updateVideo(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("update status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var updated video
+	if err := json.NewDecoder(res.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Favorited || !updated.WatchLater {
+		t.Fatalf("favorite/watch later did not update: %+v", updated)
+	}
+}
+
+func TestPlaybackUpdateSavesProgress(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "demo.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+	videos, err := srv.queryVideos(videoSelectSQL())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"position_seconds":42.5,"duration_seconds":120,"played":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/videos/1/playback", body)
+	req.SetPathValue("id", strconv.FormatInt(videos[0].ID, 10))
+	res := httptest.NewRecorder()
+	srv.updatePlayback(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("playback status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var updated video
+	if err := json.NewDecoder(res.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.PlaybackPositionSeconds != 42.5 || updated.DurationSeconds != 120 || updated.LastPlayedAt == nil {
+		t.Fatalf("unexpected playback state: %+v", updated)
+	}
+	if categoryLastReproduced(t, db, uncategorizedCategory) == "" {
+		t.Fatal("expected category last reproduced to update")
+	}
+}
+
 func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
@@ -481,7 +578,7 @@ func TestLockedCategoriesRequireExtraPassword(t *testing.T) {
 	if _, err := srv.scanFolder(root); err != nil {
 		t.Fatal(err)
 	}
-	visible, err := srv.queryVideos("SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos ORDER BY id ASC")
+	visible, err := srv.queryVideos(videoSelectSQL() + " ORDER BY id ASC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +640,15 @@ func TestLockedCategoriesRequireExtraPassword(t *testing.T) {
 		t.Fatalf("locked media status before unlock = %d", res.Code)
 	}
 
-	body := bytes.NewBufferString(`{"category":"private","password":"vault"}`)
+	body := bytes.NewBufferString(`{"position_seconds":12,"duration_seconds":60}`)
+	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/videos/%d/playback", lockedID), body)
+	res = httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("locked playback status before unlock = %d", res.Code)
+	}
+
+	body = bytes.NewBufferString(`{"category":"private","password":"vault"}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/categories/unlock", body)
 	res = httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
@@ -1145,7 +1250,7 @@ func TestScanUsesConfiguredRootOnly(t *testing.T) {
 		t.Fatalf("scan status = %d body = %s", res.Code, res.Body.String())
 	}
 
-	videos, err := srv.queryVideos("SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing FROM videos")
+	videos, err := srv.queryVideos(videoSelectSQL())
 	if err != nil {
 		t.Fatal(err)
 	}
