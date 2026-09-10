@@ -68,6 +68,19 @@ func categoryLastReproduced(t *testing.T, db *sql.DB, name string) string {
 	return value.String
 }
 
+func TestStorageForPath(t *testing.T) {
+	usage, err := storageForPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.TotalBytes == 0 {
+		t.Fatal("total storage must be reported")
+	}
+	if usage.UsedBytes > usage.TotalBytes {
+		t.Fatalf("used storage %d exceeds total storage %d", usage.UsedBytes, usage.TotalBytes)
+	}
+}
+
 func TestScanAndUpdateVideo(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
@@ -255,6 +268,148 @@ func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	}
 	if categories[1].Name != "Uncategorized" || categories[1].Count != 1 {
 		t.Fatalf("unexpected second category: %+v", categories[1])
+	}
+}
+
+func TestMoveCategoryIntoAnotherCategory(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Trips"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Trips", "beach.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "Archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Archive", "kept.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"from":"Trips","target":"Archive"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/move", body)
+	res := httptest.NewRecorder()
+	srv.moveCategory(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("move status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var response struct {
+		From        string `json:"from"`
+		Target      string `json:"target"`
+		Subcategory string `json:"subcategory"`
+		Updated     int    `json:"updated"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.From != "Trips" || response.Target != "Archive" || response.Subcategory != "Trips" || response.Updated != 1 {
+		t.Fatalf("unexpected move response: %+v", response)
+	}
+
+	movedFile := filepath.Join(root, "Archive", "Trips", "beach.jpg")
+	if _, err := os.Stat(movedFile); err != nil {
+		t.Fatalf("moved file not found: %v", err)
+	}
+	assertManagedDirectoryMode(t, filepath.Join(root, "Archive"))
+	assertManagedDirectoryMode(t, filepath.Join(root, "Archive", "Trips"))
+	if _, err := os.Stat(filepath.Join(root, "Trips", "beach.jpg")); !os.IsNotExist(err) {
+		t.Fatalf("old file still exists or stat failed unexpectedly: %v", err)
+	}
+
+	var item video
+	if err := db.QueryRow(
+		`SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing
+		FROM videos WHERE title = ?`,
+		"beach",
+	).Scan(
+		&item.ID,
+		&item.Path,
+		&item.Root,
+		&item.RelativePath,
+		&item.Category,
+		&item.Subcategory,
+		&item.MediaType,
+		&item.Filename,
+		&item.Title,
+		new(string),
+		&item.SizeBytes,
+		&item.Mtime,
+		&item.Missing,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if item.Category != "Archive" || item.Subcategory != "Trips" {
+		t.Fatalf("unexpected moved record: %+v", item)
+	}
+	if item.RelativePath != filepath.Join("Archive", "Trips", "beach.jpg") {
+		t.Fatalf("unexpected moved path: %+v", item)
+	}
+	if got := strings.Join(categoryNames(t, db), ","); got != "Archive,Uncategorized" {
+		t.Fatalf("unexpected category records after move: %s", got)
+	}
+}
+
+func TestMoveCategoryRejectsNestedSource(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Trips"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "Trips", "Europe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Trips", "Europe", "rome.jpg"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "Archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Archive", "kept.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &server{db: db}
+	if _, err := srv.scanFolder(root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"from":"Trips","target":"Archive"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/categories/move", body)
+	res := httptest.NewRecorder()
+	srv.moveCategory(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("move status = %d body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "Only flat categories can be moved") {
+		t.Fatalf("unexpected error body: %s", res.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Trips", "Europe", "rome.jpg")); err != nil {
+		t.Fatalf("source file unexpectedly changed: %v", err)
 	}
 }
 

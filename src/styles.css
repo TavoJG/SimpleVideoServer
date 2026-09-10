@@ -95,6 +95,34 @@ label {
   color: var(--muted);
 }
 
+.storage-badge {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.45rem;
+  margin-top: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  color: var(--accent-strong);
+  font-size: 0.77rem;
+  line-height: 1.25;
+  padding: 0.45rem 0.55rem;
+}
+
+.storage-badge span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.storage-badge strong {
+  text-align: right;
+}
+
+.storage-badge small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
 .auth-screen {
   display: grid;
   grid-column: 1 / -1;
@@ -211,6 +239,11 @@ label {
 
 .search-box {
   margin-bottom: -0.6rem;
+}
+
+.filter-control {
+  display: grid;
+  gap: 0.35rem;
 }
 
 .selected-category-menu,
@@ -374,7 +407,7 @@ label {
 
 .category-management {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.6rem;
 }
 
