@@ -62,6 +62,8 @@ The scanner reads supported media files directly inside the selected folder and 
 
 In the viewer, videos automatically advance when playback ends. Images automatically advance after a short display interval.
 
+Playback progress and history are no longer stored. On startup, existing databases have their legacy playback progress, duration, last-played, and category last-reproduced columns removed. Other media metadata is preserved.
+
 The media list shows thumbnails. Images use the image file directly. Videos use `ffmpeg` to generate cached JPEG thumbnails on first request. Set `VIDEO_THUMB_DIR` to choose the cache folder; it defaults to `thumbnails`.
 
 Example:

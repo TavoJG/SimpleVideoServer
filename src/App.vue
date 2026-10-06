@@ -66,14 +66,12 @@
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
                 <option value="size">Size</option>
-                <option value="last_played">Last played</option>
               </select>
             </div>
           </div>
 
           <div v-if="!showCategoryGrid" class="quick-views" aria-label="Library views">
             <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
-            <button type="button" :class="{ active: viewMode === 'recent_played' }" @click="setViewMode('recent_played')">Played</button>
             <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
             <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
             <button type="button" :class="{ active: viewMode === 'watch_later' }" @click="setViewMode('watch_later')">Later</button>
@@ -94,7 +92,6 @@
                 <span v-if="category.locked" class="lock-indicator">
                   {{ category.unlocked ? "Unlocked" : "Locked" }}
                 </span>
-                <small v-if="category.last_reproduced">{{ formatDateTime(category.last_reproduced) }}</small>
               </button>
             </div>
           </nav>
@@ -265,9 +262,7 @@
               autoplay
               playsinline
               webkit-playsinline
-              @timeupdate="savePlaybackProgress()"
-              @pause="savePlaybackProgress(true)"
-              @ended="handlePlaybackEnded"
+              @ended="playNextMedia"
             ></video>
             <img
               v-else
@@ -584,7 +579,6 @@ export default {
       categoryPassword: "",
       categoryUnlocking: false,
       categoryUnlockMessage: "",
-      lastPlaybackSaveAt: 0,
     };
   },
   computed: {
@@ -602,8 +596,6 @@ export default {
           if (!video.favorited) return false;
         } else if (this.viewMode === "watch_later") {
           if (!video.watch_later) return false;
-        } else if (this.viewMode === "recent_played") {
-          if (!video.last_played_at) return false;
         } else if (this.viewMode === "recent_added") {
           if (!video.created_at) return false;
         }
@@ -641,7 +633,6 @@ export default {
       const labels = {
         favorites: "Favorites",
         watch_later: "Watch Later",
-        recent_played: "Recently Played",
         recent_added: "Recently Added",
       };
       if (this.viewMode !== "category") return labels[this.viewMode] || "Library";
@@ -872,10 +863,10 @@ export default {
       return value === "images" || value === "videos" ? value : "all";
     },
     normalizeSortMode(value) {
-      return ["library", "title", "filename", "newest", "oldest", "size", "last_played"].includes(value) ? value : "library";
+      return ["library", "title", "filename", "newest", "oldest", "size"].includes(value) ? value : "library";
     },
     normalizeViewMode(value) {
-      return ["category", "favorites", "watch_later", "recent_played", "recent_added"].includes(value) ? value : "category";
+      return ["category", "favorites", "watch_later", "recent_added"].includes(value) ? value : "category";
     },
     routeQueryWithMediaFilter(filter = this.mediaFilter, sort = this.sortMode, view = this.viewMode) {
       const normalized = this.normalizeMediaFilter(filter);
@@ -958,7 +949,6 @@ export default {
       this.editWatchLater = Boolean(video.watch_later);
       this.customCategory = false;
       this.customSubcategory = false;
-      this.lastPlaybackSaveAt = 0;
       this.message = "";
       this.categoryUnlockMessage = "";
       if (updateRoute) {
@@ -1040,12 +1030,8 @@ export default {
         sorted.sort((a, b) => timeValue(a.created_at) - timeValue(b.created_at));
       } else if (this.sortMode === "size") {
         sorted.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
-      } else if (this.sortMode === "last_played") {
-        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
       }
-      if (this.viewMode === "recent_played") {
-        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
-      } else if (this.viewMode === "recent_added" && this.sortMode === "library") {
+      if (this.viewMode === "recent_added" && this.sortMode === "library") {
         sorted.sort((a, b) => timeValue(b.created_at) - timeValue(a.created_at));
       }
       return sorted;
@@ -1081,36 +1067,6 @@ export default {
         video[field] = original;
         this.showBanner(error.message, "error");
       }
-    },
-    async savePlaybackProgress(force = false) {
-      if (!this.selected || this.selected.media_type !== "video") return;
-      const player = this.$refs.player;
-      if (!player || !Number.isFinite(player.currentTime)) return;
-      const now = Date.now();
-      if (!force && now - this.lastPlaybackSaveAt < 10000) return;
-      this.lastPlaybackSaveAt = now;
-      const duration = Number.isFinite(player.duration) ? player.duration : 0;
-      const position = duration && player.currentTime >= duration - 5 ? 0 : player.currentTime;
-      try {
-        const updated = await this.api(`/api/videos/${this.selected.id}/playback`, {
-          method: "POST",
-          body: JSON.stringify({
-            position_seconds: position,
-            duration_seconds: duration,
-            played: true,
-          }),
-        });
-        const index = this.videos.findIndex((video) => video.id === updated.id);
-        if (index >= 0) this.videos.splice(index, 1, updated);
-        if (this.selected && this.selected.id === updated.id) this.selected = updated;
-        await this.loadCategories();
-      } catch (error) {
-        this.showBanner(error.message, "error");
-      }
-    },
-    async handlePlaybackEnded() {
-      await this.savePlaybackProgress(true);
-      this.playNextMedia();
     },
     hideThumbnail(event) {
       event.target.hidden = true;

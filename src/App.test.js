@@ -47,6 +47,31 @@ async function openApp(path = "/") {
 }
 
 describe("folder browsing", () => {
+  it("advances after video ends without saving playback", async () => {
+    const router = await openApp("/category/Travel");
+    wrapper.vm.videos.find((video) => video.id === 1).title = "Zebra beach";
+    await wrapper.find("#sort-mode").setValue("title");
+    await flushPromises();
+    await wrapper.findAll(".video-row")[0].trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.params.id).toBe("4");
+    const requestCount = fetch.mock.calls.length;
+    await wrapper.find("video").trigger("timeupdate");
+    await wrapper.find("video").trigger("pause");
+    await wrapper.find("video").trigger("ended");
+    await flushPromises();
+    expect(router.currentRoute.value.params.id).toBe("1");
+    expect(fetch.mock.calls).toHaveLength(requestCount);
+  });
+
+  it("falls back from removed playback view and sort values", async () => {
+    await openApp("/category/Travel?view=recent_played&sort=last_played");
+    expect(wrapper.vm.viewMode).toBe("category");
+    expect(wrapper.vm.sortMode).toBe("library");
+    expect(wrapper.find('option[value="last_played"]').exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text() === "Played")).toBe(false);
+  });
+
   it("shows subfolders separately from files in the parent category", async () => {
     const router = await openApp();
     await wrapper.find(".category-tile").trigger("click");

@@ -55,19 +55,6 @@ func categoryNames(t *testing.T, db *sql.DB) []string {
 	return names
 }
 
-func categoryLastReproduced(t *testing.T, db *sql.DB, name string) string {
-	t.Helper()
-
-	var value sql.NullString
-	if err := db.QueryRow("SELECT last_reproduced FROM categories WHERE name = ?", name).Scan(&value); err != nil {
-		t.Fatal(err)
-	}
-	if !value.Valid {
-		return ""
-	}
-	return value.String
-}
-
 func TestStorageForPath(t *testing.T) {
 	usage, err := storageForPath(t.TempDir())
 	if err != nil {
@@ -236,7 +223,7 @@ func TestVideoStateDefaultsAndUpdates(t *testing.T) {
 		t.Fatalf("unexpected videos: %+v", videos)
 	}
 	item := videos[0]
-	if item.CreatedAt == "" || item.LastPlayedAt != nil || item.PlaybackPositionSeconds != 0 || item.DurationSeconds != 0 || item.Favorited || item.WatchLater {
+	if item.CreatedAt == "" || item.Favorited || item.WatchLater {
 		t.Fatalf("unexpected default state: %+v", item)
 	}
 
@@ -258,53 +245,65 @@ func TestVideoStateDefaultsAndUpdates(t *testing.T) {
 	}
 }
 
-func TestPlaybackUpdateSavesProgress(t *testing.T) {
+func TestInitDBRemovesLegacyPlaybackColumns(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-
 	if err := initDB(db); err != nil {
 		t.Fatal(err)
 	}
-
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "demo.mp4"), []byte("video"), 0o644); err != nil {
+	for _, statement := range []string{
+		"ALTER TABLE videos ADD COLUMN playback_position_seconds REAL DEFAULT 0",
+		"ALTER TABLE videos ADD COLUMN duration_seconds REAL DEFAULT 0",
+		"ALTER TABLE videos ADD COLUMN last_played_at TEXT",
+		"ALTER TABLE categories ADD COLUMN last_reproduced TEXT",
+		`INSERT INTO videos (path, root, relative_path, filename, title, tags, favorited, watch_later, created_at, playback_position_seconds) VALUES ('/demo.mp4', '/', 'demo.mp4', 'demo.mp4', 'Demo', 'tag', 1, 1, '2026-01-01', 42)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := initDB(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('videos') WHERE name IN ('playback_position_seconds', 'duration_seconds', 'last_played_at')`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-
-	srv := &server{db: db}
-	if _, err := srv.scanFolder(root); err != nil {
+	if count != 0 {
+		t.Fatalf("legacy video columns = %d", count)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'last_reproduced'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	videos, err := srv.queryVideos(videoSelectSQL())
+	if count != 0 {
+		t.Fatal("legacy category column remains")
+	}
+	item, err := (&server{db: db}).queryVideo(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	body := bytes.NewBufferString(`{"position_seconds":42.5,"duration_seconds":120,"played":true}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/videos/1/playback", body)
-	req.SetPathValue("id", strconv.FormatInt(videos[0].ID, 10))
-	res := httptest.NewRecorder()
-	srv.updatePlayback(res, req)
-	if res.Code != http.StatusOK {
-		t.Fatalf("playback status = %d body = %s", res.Code, res.Body.String())
-	}
-
-	var updated video
-	if err := json.NewDecoder(res.Body).Decode(&updated); err != nil {
-		t.Fatal(err)
-	}
-	if updated.PlaybackPositionSeconds != 42.5 || updated.DurationSeconds != 120 || updated.LastPlayedAt == nil {
-		t.Fatalf("unexpected playback state: %+v", updated)
-	}
-	if categoryLastReproduced(t, db, uncategorizedCategory) == "" {
-		t.Fatal("expected category last reproduced to update")
+	if item.Title != "Demo" || strings.Join(item.Tags, ",") != "tag" || !item.Favorited || !item.WatchLater || item.CreatedAt != "2026-01-01" {
+		t.Fatalf("metadata changed: %+v", item)
 	}
 }
 
-func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
+func TestPlaybackEndpointRemoved(t *testing.T) {
+	srv := &server{}
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		res := httptest.NewRecorder()
+		srv.videoItem(res, httptest.NewRequest(method, "/api/videos/1/playback", nil))
+		if res.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", res.Code)
+		}
+	}
+}
+
+func TestListCategoriesReturnsCounts(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -336,9 +335,6 @@ func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	if _, err := srv.scanFolder(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("UPDATE categories SET last_reproduced = '2026-08-04 12:34:56' WHERE name = ?", "travel"); err != nil {
-		t.Fatal(err)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/categories", nil)
 	res := httptest.NewRecorder()
@@ -354,7 +350,7 @@ func TestListCategoriesReturnsCountsAndLastReproduced(t *testing.T) {
 	if len(categories) != 2 {
 		t.Fatalf("unexpected categories: %+v", categories)
 	}
-	if categories[0].Name != "travel" || categories[0].Count != 2 || categories[0].LastReproduced == nil || *categories[0].LastReproduced != "2026-08-04 12:34:56" {
+	if categories[0].Name != "travel" || categories[0].Count != 2 {
 		t.Fatalf("unexpected first category: %+v", categories[0])
 	}
 	if categories[0].DirectCount != 1 || len(categories[0].Subcategories) != 1 {
@@ -640,15 +636,7 @@ func TestLockedCategoriesRequireExtraPassword(t *testing.T) {
 		t.Fatalf("locked media status before unlock = %d", res.Code)
 	}
 
-	body := bytes.NewBufferString(`{"position_seconds":12,"duration_seconds":60}`)
-	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/videos/%d/playback", lockedID), body)
-	res = httptest.NewRecorder()
-	mux.ServeHTTP(res, req)
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("locked playback status before unlock = %d", res.Code)
-	}
-
-	body = bytes.NewBufferString(`{"category":"private","password":"vault"}`)
+	body := bytes.NewBufferString(`{"category":"private","password":"vault"}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/categories/unlock", body)
 	res = httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
@@ -1173,7 +1161,7 @@ func TestDeleteVideoRemovesEmptyCategoryRecord(t *testing.T) {
 	}
 }
 
-func TestMediaRequestUpdatesCategoryLastReproduced(t *testing.T) {
+func TestMediaRequestServesContent(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -1197,10 +1185,6 @@ func TestMediaRequestUpdatesCategoryLastReproduced(t *testing.T) {
 	if _, err := srv.scanFolder(root); err != nil {
 		t.Fatal(err)
 	}
-	before := categoryLastReproduced(t, db, "travel")
-	if before != "" {
-		t.Fatalf("expected empty last_reproduced before media request, got %q", before)
-	}
 
 	var id int64
 	if err := db.QueryRow("SELECT id FROM videos WHERE filename = ?", "clip.mp4").Scan(&id); err != nil {
@@ -1215,9 +1199,8 @@ func TestMediaRequestUpdatesCategoryLastReproduced(t *testing.T) {
 		t.Fatalf("media status = %d body = %s", res.Code, res.Body.String())
 	}
 
-	after := categoryLastReproduced(t, db, "travel")
-	if after == "" {
-		t.Fatal("expected last_reproduced to be updated")
+	if res.Body.String() != "video" {
+		t.Fatalf("unexpected media content: %q", res.Body.String())
 	}
 }
 
