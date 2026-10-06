@@ -22,56 +22,63 @@
 
     <template v-else>
       <aside class="sidebar">
-        <header class="brand">
-          <h1>Video Library</h1>
-          <p>{{ videos.length }} indexed media files</p>
-          <div v-if="storageUsage" class="storage-badge" :title="storageUsageTitle">
-            <span>Storage</span>
-            <strong>{{ storageUsagePercent }}% used</strong>
-            <small>{{ formatBytes(storageUsage.used_bytes) }} / {{ formatBytes(storageUsage.total_bytes) }}</small>
+        <section class="sidebar-section library-overview" aria-label="Library overview">
+          <header class="brand">
+            <h1>Video Library</h1>
+            <p>{{ videos.length }} indexed media files</p>
+            <div v-if="storageUsage" class="storage-badge" :title="storageUsageTitle">
+              <span>Storage</span>
+              <strong>{{ storageUsagePercent }}% used</strong>
+              <small>{{ formatBytes(storageUsage.used_bytes) }} / {{ formatBytes(storageUsage.total_bytes) }}</small>
+            </div>
+          </header>
+
+          <form class="scan-form" @submit.prevent="scanFolder">
+            <button class="scan-button" type="submit" :disabled="scanning || !configuredRoot">
+              {{ scanning ? "Scanning" : "Scan library" }}
+            </button>
+            <p v-if="message" class="message">{{ message }}</p>
+          </form>
+        </section>
+
+        <section class="sidebar-section library-tools" aria-label="Library tools">
+          <div class="field-group">
+            <label for="search">Search</label>
+            <input id="search" v-model="query" placeholder="Title, path, or tag" />
           </div>
-        </header>
 
-        <form class="scan-form" @submit.prevent="scanFolder">
-          <button class="scan-button" type="submit" :disabled="scanning || !configuredRoot">
-            {{ scanning ? "Scanning" : "Scan library" }}
-          </button>
-          <p v-if="message" class="message">{{ message }}</p>
-        </form>
+          <div v-if="!showCategoryGrid" class="filter-row">
+            <div class="filter-control">
+              <label for="media-filter">Show</label>
+              <select id="media-filter" :value="mediaFilter" @change="setMediaFilter($event.target.value)">
+                <option value="all">Images and videos</option>
+                <option value="images">Images only</option>
+                <option value="videos">Videos only</option>
+              </select>
+            </div>
 
-        <label class="search-box" for="search">Search</label>
-        <input id="search" v-model="query" placeholder="Title, path, or tag" />
+            <div class="filter-control">
+              <label for="sort-mode">Sort</label>
+              <select id="sort-mode" :value="sortMode" @change="setSortMode($event.target.value)">
+                <option value="library">Library order</option>
+                <option value="title">Title</option>
+                <option value="filename">Filename</option>
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="size">Size</option>
+                <option value="last_played">Last played</option>
+              </select>
+            </div>
+          </div>
 
-        <div v-if="!showCategoryGrid" class="filter-control">
-          <label for="media-filter">Show</label>
-          <select id="media-filter" :value="mediaFilter" @change="setMediaFilter($event.target.value)">
-            <option value="all">Images and videos</option>
-            <option value="images">Images only</option>
-            <option value="videos">Videos only</option>
-          </select>
-        </div>
-
-        <div v-if="!showCategoryGrid" class="filter-control">
-          <label for="sort-mode">Sort</label>
-          <select id="sort-mode" :value="sortMode" @change="setSortMode($event.target.value)">
-            <option value="library">Library order</option>
-            <option value="title">Title</option>
-            <option value="filename">Filename</option>
-            <option value="newest">Newest</option>
-            <option value="oldest">Oldest</option>
-            <option value="size">Size</option>
-            <option value="last_played">Last played</option>
-          </select>
-        </div>
-
-        <div v-if="!showCategoryGrid" class="quick-views" aria-label="Library views">
-          <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
-          <button type="button" :class="{ active: viewMode === 'continue' }" @click="setViewMode('continue')">Continue</button>
-          <button type="button" :class="{ active: viewMode === 'recent_played' }" @click="setViewMode('recent_played')">Played</button>
-          <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
-          <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
-          <button type="button" :class="{ active: viewMode === 'watch_later' }" @click="setViewMode('watch_later')">Watch Later</button>
-        </div>
+          <div v-if="!showCategoryGrid" class="quick-views" aria-label="Library views">
+            <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
+            <button type="button" :class="{ active: viewMode === 'recent_played' }" @click="setViewMode('recent_played')">Played</button>
+            <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
+            <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
+            <button type="button" :class="{ active: viewMode === 'watch_later' }" @click="setViewMode('watch_later')">Later</button>
+          </div>
+        </section>
 
         <div v-if="showCategoryGrid" class="category-menu">
           <nav class="category-grid" aria-label="Categories">
@@ -96,32 +103,31 @@
         <details v-else class="media-browser selected-category-menu" open>
           <summary>
             <span>{{ selectedCategoryLabel }}</span>
-            <strong>{{ filteredVideos.length }} items</strong>
+            <strong>
+              <template v-if="viewMode === 'category' && !selectedSubcategory && selectedCategorySubcategories.length">
+                {{ selectedCategorySubcategories.length }} folders · {{ filteredVideos.length }} files
+              </template>
+              <template v-else>{{ filteredVideos.length }} files</template>
+            </strong>
           </summary>
           <div class="selected-category-panel">
-            <button class="back-button" type="button" @click="showCategories">
-              Back to categories
+            <button class="back-button" type="button" @click="selectedSubcategory ? clearSelectedSubcategory() : showCategories()">
+              {{ selectedSubcategory ? `Back to ${selectedCategory}` : "Back to categories" }}
             </button>
-            <div v-if="selectedCategorySubcategories.length" class="subcategory-browser">
-              <button
-                class="secondary-button"
-                type="button"
-                :disabled="!selectedSubcategory"
-                @click="clearSelectedSubcategory"
-              >
-                All media
-              </button>
+            <nav v-if="viewMode === 'category' && !selectedSubcategory && canViewSelectedCategory && selectedCategorySubcategories.length" class="subcategory-browser" aria-label="Subfolders">
               <button
                 v-for="subcategory in selectedCategorySubcategories"
                 :key="subcategory.name"
-                class="secondary-button"
+                class="folder-entry"
                 type="button"
-                :class="{ active: selectedSubcategory === subcategory.name }"
                 @click="selectSubcategory(subcategory.name)"
               >
-                {{ subcategory.name }} ({{ subcategory.count }})
+                <span class="folder-icon" aria-hidden="true">📁</span>
+                <span class="folder-name">{{ subcategory.name }}</span>
+                <small>{{ subcategory.count }} files</small>
+                <span aria-hidden="true">›</span>
               </button>
-            </div>
+            </nav>
             <div v-if="isSelectedCategoryLocked" class="category-lock-status">
               <p class="message">
                 {{ isSelectedCategoryUnlocked ? "Extra password verified for this category." : "This category is locked." }}
@@ -153,7 +159,7 @@
               <p v-if="categoryUnlockMessage" class="message">{{ categoryUnlockMessage }}</p>
             </form>
 
-            <div v-if="canManageSelectedCategory" class="category-management">
+            <div v-if="canManageSelectedCategory && !selectedSubcategory" class="category-management">
               <button
                 class="secondary-button"
                 type="button"
@@ -204,9 +210,8 @@
                   <span class="video-title">{{ video.title }}</span>
                   <span class="media-badges">
                     <span class="media-type">{{ video.media_type }}</span>
-                    <span v-if="isContinueEligible(video)" class="media-type">resume {{ formatDuration(video.playback_position_seconds) }}</span>
-                    <span v-if="video.favorited" class="media-type">favorite</span>
-                    <span v-if="video.watch_later" class="media-type">later</span>
+                    <span v-if="video.favorited" class="media-type icon-badge" title="Favorite">★</span>
+                    <span v-if="video.watch_later" class="media-type icon-badge" title="Watch Later">◷</span>
                   </span>
                   <span class="video-path">{{ video.relative_path }}</span>
                   <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
@@ -233,7 +238,7 @@
                 </span>
               </button>
               <p v-if="!canViewSelectedCategory" class="message">Unlock this category to view its media.</p>
-              <p v-else-if="!filteredVideos.length" class="message">No media in this category.</p>
+              <p v-else-if="!filteredVideos.length && (selectedSubcategory || !selectedCategorySubcategories.length)" class="message">No media in this folder.</p>
             </div>
           </div>
         </details>
@@ -250,7 +255,6 @@
               @click="playPreviousMedia"
             >
               <span class="carousel-arrow">&lt;</span>
-              <span>Previous</span>
             </button>
             <video
               v-if="selected.media_type === 'video'"
@@ -261,7 +265,6 @@
               autoplay
               playsinline
               webkit-playsinline
-              @loadedmetadata="resumeSelectedPlayback"
               @timeupdate="savePlaybackProgress()"
               @pause="savePlaybackProgress(true)"
               @ended="handlePlaybackEnded"
@@ -279,7 +282,6 @@
               :disabled="!hasNextMedia"
               @click="playNextMedia"
             >
-              <span>Next</span>
               <span class="carousel-arrow">&gt;</span>
             </button>
             <div class="carousel-counter">
@@ -288,7 +290,10 @@
           </div>
 
           <details class="details-card" :key="selected.id">
-            <summary>Edit / rename / delete</summary>
+            <summary>
+              <span>Media Details</span>
+              <small>{{ selected.filename }} · {{ formatBytes(selected.size_bytes) }}</small>
+            </summary>
             <form class="details-panel" @submit.prevent="saveSelected">
               <div>
                 <label for="title">Title</label>
@@ -380,24 +385,22 @@
                   </button>
                 </div>
               </div>
-              <div class="meta">
-                <span>{{ selected.filename }}</span>
-                <span>{{ formatBytes(selected.size_bytes) }}</span>
+              <div class="details-actions">
+                <label class="toggle-control">
+                  <input v-model="editFavorited" type="checkbox" />
+                  Favorite
+                </label>
+                <label class="toggle-control">
+                  <input v-model="editWatchLater" type="checkbox" />
+                  Watch Later
+                </label>
+                <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
+                  {{ deleting ? "Deleting" : "Delete" }}
+                </button>
+                <button class="save-button" type="submit" :disabled="saving">
+                  {{ saving ? "Saving" : "Save changes" }}
+                </button>
               </div>
-              <label class="toggle-control">
-                <input v-model="editFavorited" type="checkbox" />
-                Favorite
-              </label>
-              <label class="toggle-control">
-                <input v-model="editWatchLater" type="checkbox" />
-                Watch Later
-              </label>
-              <button class="delete-button" type="button" :disabled="deleting" @click="requestDeleteSelected">
-                {{ deleting ? "Deleting" : "Delete" }}
-              </button>
-              <button class="save-button" type="submit" :disabled="saving">
-                {{ saving ? "Saving" : "Save changes" }}
-              </button>
             </form>
           </details>
         </div>
@@ -594,13 +597,11 @@ export default {
         const category = video.category || "Uncategorized";
         if (this.viewMode === "category") {
           if (category !== this.selectedCategory) return false;
-          if (this.selectedSubcategory && (video.subcategory || "") !== this.selectedSubcategory) return false;
+          if ((video.subcategory || "") !== this.selectedSubcategory) return false;
         } else if (this.viewMode === "favorites") {
           if (!video.favorited) return false;
         } else if (this.viewMode === "watch_later") {
           if (!video.watch_later) return false;
-        } else if (this.viewMode === "continue") {
-          if (!this.isContinueEligible(video)) return false;
         } else if (this.viewMode === "recent_played") {
           if (!video.last_played_at) return false;
         } else if (this.viewMode === "recent_added") {
@@ -640,7 +641,6 @@ export default {
       const labels = {
         favorites: "Favorites",
         watch_later: "Watch Later",
-        continue: "Continue Watching",
         recent_played: "Recently Played",
         recent_added: "Recently Added",
       };
@@ -875,7 +875,7 @@ export default {
       return ["library", "title", "filename", "newest", "oldest", "size", "last_played"].includes(value) ? value : "library";
     },
     normalizeViewMode(value) {
-      return ["category", "favorites", "watch_later", "continue", "recent_played", "recent_added"].includes(value) ? value : "category";
+      return ["category", "favorites", "watch_later", "recent_played", "recent_added"].includes(value) ? value : "category";
     },
     routeQueryWithMediaFilter(filter = this.mediaFilter, sort = this.sortMode, view = this.viewMode) {
       const normalized = this.normalizeMediaFilter(filter);
@@ -1043,27 +1043,12 @@ export default {
       } else if (this.sortMode === "last_played") {
         sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
       }
-      if (this.viewMode === "continue") {
-        sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
-      } else if (this.viewMode === "recent_played") {
+      if (this.viewMode === "recent_played") {
         sorted.sort((a, b) => timeValue(b.last_played_at) - timeValue(a.last_played_at));
       } else if (this.viewMode === "recent_added" && this.sortMode === "library") {
         sorted.sort((a, b) => timeValue(b.created_at) - timeValue(a.created_at));
       }
       return sorted;
-    },
-    isContinueEligible(video) {
-      if (!video || video.media_type !== "video") return false;
-      const position = Number(video.playback_position_seconds) || 0;
-      const duration = Number(video.duration_seconds) || 0;
-      if (position <= 10) return false;
-      return !duration || position < duration - 5;
-    },
-    formatDuration(seconds) {
-      const value = Math.max(0, Math.floor(Number(seconds) || 0));
-      const minutes = Math.floor(value / 60);
-      const remaining = value % 60;
-      return `${minutes}:${String(remaining).padStart(2, "0")}`;
     },
     async persistVideoMetadata(video, patch) {
       const updated = await this.api(`/api/videos/${video.id}`, {
@@ -1095,15 +1080,6 @@ export default {
       } catch (error) {
         video[field] = original;
         this.showBanner(error.message, "error");
-      }
-    },
-    resumeSelectedPlayback(event) {
-      if (!this.selected || this.selected.media_type !== "video") return;
-      const player = event?.target || this.$refs.player;
-      if (!player || !this.isContinueEligible(this.selected)) return;
-      const position = Number(this.selected.playback_position_seconds) || 0;
-      if (position > 0 && position < player.duration - 5) {
-        player.currentTime = position;
       }
     },
     async savePlaybackProgress(force = false) {

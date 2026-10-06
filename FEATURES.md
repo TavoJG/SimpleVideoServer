@@ -2,7 +2,6 @@
 
 ## Highest Priority
 
-- Resume playback with a Continue Watching view.
 - Favorites and Watch Later toggles for quick personal curation.
 - Sort controls for title, filename, added date, file size, and last played date.
 - Recently Played and Recently Added views.

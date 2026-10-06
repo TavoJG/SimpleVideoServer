@@ -2,14 +2,7 @@ import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "./styles.css";
-
-const routes = [
-  { path: "/", name: "categories", component: { template: "<span />" } },
-  { path: "/category/:category", name: "category", component: { template: "<span />" } },
-  { path: "/category/:category/subcategory/:subcategory", name: "subcategory", component: { template: "<span />" } },
-  { path: "/category/:category/media/:id", name: "media", component: { template: "<span />" } },
-  { path: "/category/:category/subcategory/:subcategory/media/:id", name: "subcategory-media", component: { template: "<span />" } },
-];
+import { routes } from "./routes";
 
 const router = createRouter({
   history: createWebHistory(),

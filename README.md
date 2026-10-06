@@ -11,6 +11,8 @@ npm run build
 go run .
 ```
 
+Run the frontend regression tests with `npm test`. Run the backend suite with `go test ./...` after building the frontend.
+
 Open `http://127.0.0.1:5000`.
 
 For frontend-only development, run the Go server in one terminal and Vite in another:
