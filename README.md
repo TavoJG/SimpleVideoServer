@@ -132,3 +132,11 @@ The server uses Go's standard `net/http` router. If this grows beyond a small lo
 Supported video extensions: `.mp4`, `.m4v`, `.mov`, `.webm`, `.mkv`, `.avi`, `.wmv`, `.flv`, `.mpeg`, `.mpg`.
 
 Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.avif`.
+# Visual Classification
+
+Optional visual classification runs on a separate GPU machine. See
+[classifier setup and evaluation](classifier/README.md) for model configuration,
+Docker deployment, authentication, and benchmarking. Set `CLASSIFIER_URL` and
+`CLASSIFIER_TOKEN` on this server and install FFmpeg/FFprobe. Parent categories
+offer a classification action and approval queue; approved destinations move
+files into subfolders.

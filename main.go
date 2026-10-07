@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -41,11 +42,13 @@ const uncategorizedCategory = "Uncategorized"
 const managedDirectoryMode = 0o2775
 
 type server struct {
-	db               *sql.DB
-	defaultVideoRoot string
-	thumbnailDir     string
-	password         string
-	lockedCategories map[string]string
+	db                    *sql.DB
+	defaultVideoRoot      string
+	thumbnailDir          string
+	password              string
+	lockedCategories      map[string]string
+	classificationMu      sync.Mutex
+	classificationCancels map[int64]context.CancelFunc
 }
 
 type video struct {
@@ -169,7 +172,14 @@ func main() {
 }
 
 func (s *server) routes() http.Handler {
+	if err := s.initClassification(); err != nil {
+		panic(err)
+	}
 	mux := http.NewServeMux()
+	mux.Handle("POST /api/classification/jobs", s.authRequired(http.HandlerFunc(s.startClassification)))
+	mux.Handle("GET /api/classification/jobs", s.authRequired(http.HandlerFunc(s.listClassification)))
+	mux.Handle("POST /api/classification/cancel", s.authRequired(http.HandlerFunc(s.cancelClassification)))
+	mux.Handle("POST /api/classification/apply", s.authRequired(http.HandlerFunc(s.applyClassification)))
 	mux.HandleFunc("GET /", s.index)
 	frontendFiles, err := fs.Sub(frontendDist, "frontend/dist")
 	if err != nil {

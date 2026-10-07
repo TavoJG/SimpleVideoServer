@@ -183,6 +183,7 @@
               </button>
             </div>
 
+            <ClassificationReview v-if="canManageSelectedCategory && !selectedSubcategory" :key="selectedCategory" :category="selectedCategory" :subcategories="selectedCategorySubcategories.map(item => item.name)" :api="api" @applied="loadLibrary" />
             <div class="video-list" role="list">
               <button
                 v-for="video in filteredVideos"
@@ -532,7 +533,9 @@
 </template>
 
 <script>
+import ClassificationReview from './ClassificationReview.vue';
 export default {
+  components: { ClassificationReview },
   data() {
     return {
       categorySummariesData: [],

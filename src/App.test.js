@@ -25,6 +25,7 @@ beforeEach(() => {
       "/api/config": { default_video_root: "/library" },
       "/api/categories": categories,
       "/api/videos": videos.filter((video) => video.category !== "Private"),
+      "/api/classification/jobs?category=Travel": { enabled: false, jobs: [], suggestions: [] },
     };
     if (!(path in responses)) throw new Error(`Unexpected request: ${path}`);
     return { ok: true, json: async () => structuredClone(responses[path]) };
