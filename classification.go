@@ -51,7 +51,7 @@ func (s *server) startClassification(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCategoryAccess(w, r, category) {
 		return
 	}
-	rows, err := s.db.Query(`SELECT id FROM videos WHERE category=? AND subcategory='' AND missing=0`, category)
+	rows, err := s.db.Query(`SELECT id FROM videos WHERE category=? AND subcategory='' AND missing=0 AND trashed_at IS NULL`, category)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
@@ -158,7 +158,7 @@ func (s *server) classify(ctx context.Context, item video, category string) (cla
 		return result, err
 	}
 	names := []string{}
-	rows, err := s.db.Query(`SELECT DISTINCT subcategory FROM videos WHERE category=? AND subcategory<>''`, category)
+	rows, err := s.db.Query(`SELECT DISTINCT subcategory FROM videos WHERE category=? AND subcategory<>'' AND trashed_at IS NULL`, category)
 	if err != nil {
 		return result, err
 	}
@@ -237,6 +237,11 @@ func (s *server) runClassification(ctx context.Context, id int64, category strin
 			status = "cancelled"
 			break
 		}
+		current, loadErr := s.queryVideo(item.ID)
+		if loadErr != nil || current.TrashedAt != "" {
+			_, _ = s.db.Exec(`UPDATE classification_jobs SET processed=processed+1 WHERE id=?`, id)
+			continue
+		}
 		result, err := s.classify(ctx, item, category)
 		if ctx.Err() != nil {
 			status = "cancelled"
@@ -297,7 +302,7 @@ func (s *server) listClassification(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		item, e := s.queryVideo(vid)
-		if e != nil || !s.canAccessCategory(r, item.Category) {
+		if e != nil || item.TrashedAt != "" || !s.canAccessCategory(r, item.Category) {
 			continue
 		}
 		suggestions = append(suggestions, map[string]any{"id": id, "video_id": vid, "subcategory": sub, "reason": reason, "status": status, "error": message, "title": item.Title, "thumbnail_url": item.ThumbnailURL})
@@ -354,6 +359,8 @@ func (s *server) applyClassification(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) applySuggestion(r *http.Request, id int64, sub string) error {
+	s.libraryMu.Lock()
+	defer s.libraryMu.Unlock()
 	s.classificationMu.Lock()
 	defer s.classificationMu.Unlock()
 	var vid, size int64
@@ -372,6 +379,9 @@ func (s *server) applySuggestion(r *http.Request, id int64, sub string) error {
 	if err != nil {
 		return err
 	}
+	if item.TrashedAt != "" {
+		return fmt.Errorf("media is in Trash")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -383,16 +393,8 @@ func (s *server) applySuggestion(r *http.Request, id int64, sub string) error {
 	if err != nil || normalized == "" || len(normalized) > 100 || strings.ContainsRune(normalized, 0) {
 		return fmt.Errorf("choose a valid subcategory")
 	}
-	moved, err := moveVideoToLocation(item, category, normalized)
+	_, err = s.updateMedia(item, updateVideoRequest{Title: item.Title, Tags: item.Tags, Category: &category, Subcategory: &normalized})
 	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`UPDATE videos SET path=?,relative_path=?,subcategory=?,filename=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, moved.Path, moved.RelativePath, moved.Subcategory, moved.Filename, vid)
-	if err != nil {
-		rollback := os.Rename(moved.Path, item.Path)
-		if rollback != nil {
-			return fmt.Errorf("database update failed: %v; move rollback failed: %v", err, rollback)
-		}
 		return err
 	}
 	_, err = s.db.Exec(`UPDATE classification_suggestions SET status='applied',subcategory=?,error='' WHERE id=?`, normalized, id)

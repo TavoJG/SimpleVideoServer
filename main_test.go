@@ -68,6 +68,54 @@ func TestStorageForPath(t *testing.T) {
 	}
 }
 
+func TestScanReportsMissingFiles(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initDB(db); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.mp4")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := &server{db: db}
+	first, err := srv.scanFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Root != root || first.Found != 1 || first.Added != 1 || first.Updated != 0 || first.Missing != 0 || first.LastScanAt == "" {
+		t.Fatalf("unexpected scan: %+v", first)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	second, err := srv.scanFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Missing != 1 || second.Found != 0 {
+		t.Fatalf("unexpected missing scan: %+v", second)
+	}
+	encoded, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy struct {
+		Root                  string
+		Found, Added, Updated int
+	}
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Root != root || legacy.Found != 0 {
+		t.Fatalf("legacy response: %+v", legacy)
+	}
+}
+
 func TestScanAndUpdateVideo(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
@@ -725,7 +773,7 @@ func TestEmbeddedFrontendAssetsServe(t *testing.T) {
 	}
 }
 
-func TestDeleteVideoRemovesFileAndRecord(t *testing.T) {
+func TestDeleteVideoTrashesFileAndPreservesRecord(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -763,11 +811,11 @@ func TestDeleteVideoRemovesFileAndRecord(t *testing.T) {
 		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE id = ?", id).Scan(&count); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE id = ? AND trashed_at IS NOT NULL", id).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("record was not deleted")
+	if count != 1 {
+		t.Fatalf("record was not preserved in Trash")
 	}
 }
 
@@ -1037,7 +1085,7 @@ func TestRenameCategoryRejectsExistingTargetCategory(t *testing.T) {
 	}
 }
 
-func TestDeleteCategoryDeletesFolderFilesAndRecords(t *testing.T) {
+func TestDeleteCategoryTrashesFilesAndRetainsRecords(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -1080,7 +1128,7 @@ func TestDeleteCategoryDeletesFolderFilesAndRecords(t *testing.T) {
 	}
 
 	var deletedCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE category = ?", "doomed").Scan(&deletedCount); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM videos WHERE category = ? AND trashed_at IS NULL", "doomed").Scan(&deletedCount); err != nil {
 		t.Fatal(err)
 	}
 	if deletedCount != 0 {
@@ -1094,7 +1142,7 @@ func TestDeleteCategoryDeletesFolderFilesAndRecords(t *testing.T) {
 	if keepCount != 1 {
 		t.Fatalf("unrelated record count = %d", keepCount)
 	}
-	if got := strings.Join(categoryNames(t, db), ","); got != "Uncategorized" {
+	if got := strings.Join(categoryNames(t, db), ","); got != "doomed,Uncategorized" {
 		t.Fatalf("unexpected category records after delete: %s", got)
 	}
 }
@@ -1120,7 +1168,7 @@ func TestDeleteCategoryRejectsUncategorized(t *testing.T) {
 	}
 }
 
-func TestDeleteVideoRemovesEmptyCategoryRecord(t *testing.T) {
+func TestDeleteVideoPreservesCategoryForRestore(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "videos.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -1156,7 +1204,7 @@ func TestDeleteVideoRemovesEmptyCategoryRecord(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("delete solo category status = %d body = %s", res.Code, res.Body.String())
 	}
-	if got := strings.Join(categoryNames(t, db), ","); got != "Uncategorized" {
+	if got := strings.Join(categoryNames(t, db), ","); got != "solo,Uncategorized" {
 		t.Fatalf("unexpected category records after deleting only item: %s", got)
 	}
 }
