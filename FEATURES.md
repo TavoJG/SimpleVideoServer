@@ -8,9 +8,10 @@
 
 ## Library Management
 
-- Bulk edit mode for moving, tagging, deleting, or categorizing multiple items at once.
-- Tag browser so tags can be navigated directly instead of only searched.
-- Trash folder and restore flow before permanent deletion.
+- Completed: bulk moving, tagging, favorite/watch-later edits, recoverable deletion, and failed-item retry.
+- Completed: exact tag browsing across accessible media.
+- Completed: Trash with restore and explicit permanent deletion.
+- Completed: subcategory management and persistent compact browsing.
 
 ## Playback And Browsing
 
@@ -19,5 +20,5 @@
 
 ## Documentation And Polish
 
-- Align the README with the current category/subcategory folder behavior.
-- Make folder-depth support explicit in the UI and setup documentation.
+- Completed: README documents category/subcategory behavior, two-level depth, trash retention, and API compatibility.
+- Completed: folder dialogs enforce the supported depth and report retained unindexed contents.

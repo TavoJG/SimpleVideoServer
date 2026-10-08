@@ -48,6 +48,7 @@ type server struct {
 	password              string
 	lockedCategories      map[string]string
 	classificationMu      sync.Mutex
+	libraryMu             sync.Mutex
 	classificationCancels map[int64]context.CancelFunc
 }
 
@@ -70,6 +71,8 @@ type video struct {
 	WatchLater   bool     `json:"watch_later"`
 	StreamURL    string   `json:"stream_url"`
 	ThumbnailURL string   `json:"thumbnail_url"`
+	TrashedAt    string   `json:"trashed_at,omitempty"`
+	TrashPath    string   `json:"trash_path,omitempty"`
 }
 
 type categorySummary struct {
@@ -87,10 +90,12 @@ type subcategorySummary struct {
 }
 
 type scanResponse struct {
-	Root    string `json:"root"`
-	Added   int    `json:"added"`
-	Updated int    `json:"updated"`
-	Found   int    `json:"found"`
+	Root       string `json:"root"`
+	Added      int    `json:"added"`
+	Updated    int    `json:"updated"`
+	Found      int    `json:"found"`
+	Missing    int    `json:"missing"`
+	LastScanAt string `json:"last_scan_at"`
 }
 
 type storageUsage struct {
@@ -197,13 +202,21 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/categories/unlock", s.authRequired(http.HandlerFunc(s.unlockCategory)))
 	mux.Handle("POST /api/categories/lock", s.authRequired(http.HandlerFunc(s.lockCategory)))
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
+	mux.Handle("POST /api/videos/bulk", s.authRequired(http.HandlerFunc(s.bulkVideos)))
+	mux.Handle("GET /api/trash", s.authRequired(http.HandlerFunc(s.listTrash)))
+	mux.Handle("POST /api/trash/empty", s.authRequired(http.HandlerFunc(s.emptyTrash)))
+	mux.Handle("POST /api/trash/{id}/restore", s.authRequired(http.HandlerFunc(s.restoreMedia)))
+	mux.Handle("DELETE /api/trash/{id}", s.authRequired(http.HandlerFunc(s.purgeMedia)))
+	mux.Handle("POST /api/subcategories/rename", s.authRequired(http.HandlerFunc(s.renameSubcategory)))
+	mux.Handle("POST /api/subcategories/move", s.authRequired(http.HandlerFunc(s.moveSubcategory)))
+	mux.Handle("POST /api/subcategories/delete", s.authRequired(http.HandlerFunc(s.deleteSubcategory)))
 	mux.Handle("POST /api/categories/rename", s.authRequired(http.HandlerFunc(s.renameCategory)))
 	mux.Handle("POST /api/categories/move", s.authRequired(http.HandlerFunc(s.moveCategory)))
 	mux.Handle("POST /api/categories/delete", s.authRequired(http.HandlerFunc(s.deleteCategory)))
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
 	mux.Handle("GET /thumb/{id}", s.authRequired(http.HandlerFunc(s.thumbnail)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/videos/") {
+		if strings.HasPrefix(r.URL.Path, "/api/videos/") && r.URL.Path != "/api/videos/bulk" {
 			s.authRequired(http.HandlerFunc(s.videoItem)).ServeHTTP(w, r)
 			return
 		}
@@ -214,108 +227,25 @@ func (s *server) routes() http.Handler {
 func (s *server) deleteCategory(w http.ResponseWriter, r *http.Request) {
 	var req deleteCategoryRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		writeError(w, 400, "Invalid JSON body.")
 		return
 	}
-
 	category, err := normalizeCategory(req.Category)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if category == uncategorizedCategory {
-		writeError(w, http.StatusBadRequest, "Uncategorized cannot be deleted.")
+	if err != nil || category == uncategorizedCategory {
+		writeError(w, 400, "Choose a managed category.")
 		return
 	}
 	if !s.requireCategoryAccess(w, r, category) {
 		return
 	}
-
-	rows, err := s.db.Query("SELECT id, path, root FROM videos WHERE category = ?", category)
+	s.libraryMu.Lock()
+	defer s.libraryMu.Unlock()
+	result, err := s.trashFolder(category, "")
 	if err != nil {
-		log.Printf("delete category query failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
+		writeError(w, 400, err.Error())
 		return
 	}
-	defer rows.Close()
-
-	type categoryItem struct {
-		id   int64
-		path string
-		root string
-	}
-	items := []categoryItem{}
-	roots := map[string]bool{}
-	for rows.Next() {
-		var item categoryItem
-		if err := rows.Scan(&item.id, &item.path, &item.root); err != nil {
-			log.Printf("delete category scan failed: category=%q err=%v", category, err)
-			writeError(w, http.StatusInternalServerError, "Could not load category.")
-			return
-		}
-		items = append(items, item)
-		roots[item.root] = true
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("delete category rows iteration failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
-		return
-	}
-	if len(items) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-
-	for _, item := range items {
-		if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("delete category file removal failed: category=%q video_id=%d path=%q err=%v", category, item.id, item.path, err)
-			writeError(w, http.StatusInternalServerError, "Could not delete category media files.")
-			return
-		}
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		log.Printf("delete category begin tx failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
-		return
-	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec("DELETE FROM videos WHERE category = ?", category)
-	if err != nil {
-		log.Printf("delete category videos delete failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
-		return
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		log.Printf("delete category rows affected failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
-		return
-	}
-	if _, err := tx.Exec("DELETE FROM categories WHERE name = ?", category); err != nil {
-		log.Printf("delete category category row delete failed: category=%q err=%v", category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		log.Printf("delete category commit failed: category=%q deleted=%d err=%v", category, deleted, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete category records.")
-		return
-	}
-
-	for root := range roots {
-		categoryDir := filepath.Join(root, category)
-		if err := os.RemoveAll(categoryDir); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("delete category could not remove folder %s: %v", categoryDir, err)
-		}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"category": category,
-		"deleted":  deleted,
-	})
+	writeJSON(w, 200, result)
 }
 
 func initDB(db *sql.DB) error {
@@ -352,6 +282,11 @@ func initDB(db *sql.DB) error {
 
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	for _, column := range []string{"trashed_at", "trash_path"} {
+		if err := ensureColumn(db, "videos", column, "TEXT"); err != nil {
 			return err
 		}
 	}
@@ -533,7 +468,7 @@ func (s *server) queryCategories() ([]categorySummary, error) {
 			COUNT(CASE WHEN v.subcategory = '' THEN 1 END) AS direct_count
 		FROM categories c
 		LEFT JOIN videos v
-			ON v.category = c.name AND v.missing = 0
+			ON v.category = c.name AND v.missing = 0 AND v.trashed_at IS NULL
 		GROUP BY c.id, c.name
 		ORDER BY c.name COLLATE NOCASE ASC`,
 	)
@@ -558,7 +493,7 @@ func (s *server) queryCategories() ([]categorySummary, error) {
 	subcategoryRows, err := s.db.Query(
 		`SELECT category, subcategory, COUNT(id) AS item_count
 		FROM videos
-		WHERE missing = 0 AND subcategory <> ''
+		WHERE missing = 0 AND trashed_at IS NULL AND subcategory <> ''
 		GROUP BY category, subcategory
 		ORDER BY category COLLATE NOCASE ASC, subcategory COLLATE NOCASE ASC`,
 	)
@@ -757,7 +692,7 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	includeMissing := r.URL.Query().Get("include_missing") == "1"
 
-	where := []string{}
+	where := []string{"trashed_at IS NULL"}
 	args := []interface{}{}
 	if !includeMissing {
 		where = append(where, "missing = 0")
@@ -827,7 +762,7 @@ func (s *server) getVideo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item, err := s.queryVideo(id)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || item.TrashedAt != "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -846,119 +781,34 @@ func (s *server) updateVideo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
 	var req updateVideoRequest
 	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		writeError(w, 400, "Invalid JSON body.")
 		return
 	}
-
-	title := strings.TrimSpace(req.Title)
-	if title == "" {
-		writeError(w, http.StatusBadRequest, "Title is required.")
-		return
-	}
-
-	tags := normalizeTags(req.Tags)
+	s.libraryMu.Lock()
+	defer s.libraryMu.Unlock()
 	item, err := s.queryVideo(id)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load video.")
+		writeError(w, 500, "Could not load media.")
 		return
 	}
-	previousCategory := item.Category
-	if !s.requireCategoryAccess(w, r, previousCategory) {
+	if !s.requireCategoryAccess(w, r, item.Category) {
 		return
 	}
-
-	if req.Category != nil {
-		if !s.requireCategoryAccess(w, r, *req.Category) {
-			return
-		}
-		requestedSubcategory := item.Subcategory
-		if req.Subcategory != nil {
-			requestedSubcategory = *req.Subcategory
-		}
-		moved, err := moveVideoToLocation(item, *req.Category, requestedSubcategory)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		item = moved
-	} else if req.Subcategory != nil {
-		moved, err := moveVideoToLocation(item, item.Category, *req.Subcategory)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		item = moved
+	if req.Category != nil && !s.requireCategoryAccess(w, r, *req.Category) {
+		return
 	}
-
-	oldCategory, err := normalizeCategory(previousCategory)
+	updated, err := s.updateMedia(item, req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
+		writeError(w, 400, err.Error())
 		return
 	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-	defer tx.Rollback()
-
-	if err := ensureCategoryTx(tx, item.Category); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-	result, err := tx.Exec(
-		`UPDATE videos
-		SET title = ?, tags = ?, path = ?, relative_path = ?, category = ?, subcategory = ?, filename = ?,
-			favorited = ?, watch_later = ?,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`,
-		title,
-		tags,
-		item.Path,
-		item.RelativePath,
-		item.Category,
-		item.Subcategory,
-		item.Filename,
-		boolToInt(boolValueOrDefault(req.Favorited, item.Favorited)),
-		boolToInt(boolValueOrDefault(req.WatchLater, item.WatchLater)),
-		id,
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-	if affected == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	if err := deleteCategoryIfUnusedTx(tx, oldCategory); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update video.")
-		return
-	}
-
-	item, err = s.queryVideo(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load updated video.")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, 200, updated)
 }
 
 func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
@@ -966,392 +816,33 @@ func (s *server) deleteVideo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
+	s.libraryMu.Lock()
+	defer s.libraryMu.Unlock()
 	item, err := s.queryVideo(id)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		log.Printf("delete video query failed: video_id=%d err=%v", id, err)
-		writeError(w, http.StatusInternalServerError, "Could not load media.")
+		writeError(w, 500, "Could not load media.")
 		return
 	}
 	if !s.requireCategoryAccess(w, r, item.Category) {
 		return
 	}
-
-	if err := os.Remove(item.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("delete video file removal failed: video_id=%d category=%q path=%q err=%v", id, item.Category, item.Path, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media file.")
-		return
-	}
-
-	tx, err := s.db.Begin()
+	updated, err := s.trashVideo(item)
 	if err != nil {
-		log.Printf("delete video begin tx failed: video_id=%d category=%q err=%v", id, item.Category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
+		writeError(w, 400, err.Error())
 		return
 	}
-	defer tx.Rollback()
-
-	result, err := tx.Exec("DELETE FROM videos WHERE id = ?", id)
-	if err != nil {
-		log.Printf("delete video row delete failed: video_id=%d category=%q err=%v", id, item.Category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
-		return
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		log.Printf("delete video rows affected failed: video_id=%d category=%q err=%v", id, item.Category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
-		return
-	}
-	if affected == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	if err := deleteCategoryIfUnusedTx(tx, item.Category); err != nil {
-		log.Printf("delete video cleanup category failed: video_id=%d category=%q err=%v", id, item.Category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		log.Printf("delete video commit failed: video_id=%d category=%q err=%v", id, item.Category, err)
-		writeError(w, http.StatusInternalServerError, "Could not delete media record.")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	writeJSON(w, 200, map[string]any{"deleted": true, "trashed": true, "video": updated})
 }
 
 func (s *server) renameCategory(w http.ResponseWriter, r *http.Request) {
-	var req renameCategoryRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
-		return
-	}
-
-	from, err := normalizeCategory(req.From)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	to, err := normalizeCategory(req.To)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if from == uncategorizedCategory || to == uncategorizedCategory {
-		writeError(w, http.StatusBadRequest, "Uncategorized cannot be renamed.")
-		return
-	}
-	if s.isCategoryLocked(from) || s.isCategoryLocked(to) {
-		writeError(w, http.StatusBadRequest, "Locked categories cannot be renamed.")
-		return
-	}
-	if strings.EqualFold(from, to) {
-		writeError(w, http.StatusBadRequest, "Choose a different category name.")
-		return
-	}
-
-	var targetCount int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM categories WHERE name = ? COLLATE NOCASE", to).Scan(&targetCount); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not check target category.")
-		return
-	}
-	if targetCount > 0 {
-		writeError(w, http.StatusBadRequest, "Target category already exists.")
-		return
-	}
-
-	rows, err := s.db.Query("SELECT id, root, filename, subcategory FROM videos WHERE category = ?", from)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
-		return
-	}
-	defer rows.Close()
-
-	type categoryItem struct {
-		id          int64
-		root        string
-		filename    string
-		subcategory string
-	}
-	items := []categoryItem{}
-	roots := map[string]bool{}
-	for rows.Next() {
-		var item categoryItem
-		if err := rows.Scan(&item.id, &item.root, &item.filename, &item.subcategory); err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not load category.")
-			return
-		}
-		items = append(items, item)
-		roots[item.root] = true
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
-		return
-	}
-	if len(items) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-
-	for root := range roots {
-		targetDir := filepath.Join(root, to)
-		if _, err := os.Stat(targetDir); err == nil {
-			writeError(w, http.StatusBadRequest, "Target category already exists.")
-			return
-		} else if !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusInternalServerError, "Could not check target category.")
-			return
-		}
-	}
-
-	renamedRoots := []string{}
-	for root := range roots {
-		fromDir := filepath.Join(root, from)
-		toDir := filepath.Join(root, to)
-		if _, err := os.Stat(fromDir); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not check category folder.")
-			return
-		}
-		if err := os.Rename(fromDir, toDir); err != nil {
-			for i := len(renamedRoots) - 1; i >= 0; i-- {
-				previousRoot := renamedRoots[i]
-				if rollbackErr := os.Rename(filepath.Join(previousRoot, to), filepath.Join(previousRoot, from)); rollbackErr != nil {
-					log.Printf("rename category rollback failed: %v", rollbackErr)
-				}
-			}
-			writeError(w, http.StatusInternalServerError, "Could not rename category folder.")
-			return
-		}
-		if err := normalizeManagedDirectoryTree(toDir); err != nil {
-			log.Printf("rename category permission normalization failed: from=%q to=%q root=%q err=%v", from, to, root, err)
-		}
-		renamedRoots = append(renamedRoots, root)
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-	defer tx.Rollback()
-
-	for _, item := range items {
-		newRelativePath := buildRelativePath(to, item.subcategory, item.filename)
-		newPath := filepath.Join(item.root, newRelativePath)
-		if _, err := tx.Exec(
-			`UPDATE videos
-			SET path = ?, relative_path = ?, category = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?`,
-			newPath, newRelativePath, to, item.id,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not update category.")
-			return
-		}
-	}
-	if err := renameCategoryRecordTx(tx, from, to); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"from":    from,
-		"to":      to,
-		"updated": len(items),
-	})
+	s.managedRenameCategory(w, r)
 }
 
-func (s *server) moveCategory(w http.ResponseWriter, r *http.Request) {
-	var req moveCategoryRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
-		return
-	}
-
-	from, err := normalizeCategory(req.From)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	target, err := normalizeCategory(req.Target)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if from == uncategorizedCategory {
-		writeError(w, http.StatusBadRequest, "Uncategorized cannot be moved.")
-		return
-	}
-	if target == uncategorizedCategory {
-		writeError(w, http.StatusBadRequest, "Choose a destination category.")
-		return
-	}
-	if strings.EqualFold(from, target) {
-		writeError(w, http.StatusBadRequest, "Choose a different destination category.")
-		return
-	}
-	if s.isCategoryLocked(from) || s.isCategoryLocked(target) {
-		writeError(w, http.StatusBadRequest, "Locked categories cannot be moved.")
-		return
-	}
-	if !s.requireCategoryAccess(w, r, from) || !s.requireCategoryAccess(w, r, target) {
-		return
-	}
-
-	var targetCount int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM categories WHERE name = ? COLLATE NOCASE", target).Scan(&targetCount); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not check target category.")
-		return
-	}
-	if targetCount == 0 {
-		writeError(w, http.StatusBadRequest, "Destination category does not exist.")
-		return
-	}
-
-	var subcategoryConflictCount int
-	if err := s.db.QueryRow(
-		"SELECT COUNT(*) FROM videos WHERE category = ? AND subcategory = ?",
-		target,
-		from,
-	).Scan(&subcategoryConflictCount); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not check destination category.")
-		return
-	}
-	if subcategoryConflictCount > 0 {
-		writeError(w, http.StatusBadRequest, "Destination category already has that subcategory.")
-		return
-	}
-
-	rows, err := s.db.Query(
-		`SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags, size_bytes, mtime, missing
-		FROM videos
-		WHERE category = ?`,
-		from,
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
-		return
-	}
-	defer rows.Close()
-
-	items := []video{}
-	roots := map[string]bool{}
-	for rows.Next() {
-		var item video
-		var rawTags string
-		if err := rows.Scan(
-			&item.ID,
-			&item.Path,
-			&item.Root,
-			&item.RelativePath,
-			&item.Category,
-			&item.Subcategory,
-			&item.MediaType,
-			&item.Filename,
-			&item.Title,
-			&rawTags,
-			&item.SizeBytes,
-			&item.Mtime,
-			&item.Missing,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not load category.")
-			return
-		}
-		item.Tags = splitTags(rawTags)
-		if item.Subcategory != "" {
-			writeError(w, http.StatusBadRequest, "Only flat categories can be moved into another category.")
-			return
-		}
-		if item.Missing {
-			writeError(w, http.StatusBadRequest, "Category contains missing files and cannot be moved.")
-			return
-		}
-		items = append(items, item)
-		roots[item.Root] = true
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not load category.")
-		return
-	}
-	if len(items) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-
-	for root := range roots {
-		targetDir := locationDirectory(root, target, from)
-		if _, err := os.Stat(targetDir); err == nil {
-			writeError(w, http.StatusBadRequest, "Destination category already has that subcategory.")
-			return
-		} else if !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusInternalServerError, "Could not check destination category.")
-			return
-		}
-	}
-
-	movedItems := make([]video, 0, len(items))
-	for _, item := range items {
-		moved, err := moveVideoToLocation(item, target, from)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		movedItems = append(movedItems, moved)
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-	defer tx.Rollback()
-
-	if err := ensureCategoryTx(tx, target); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-	for _, item := range movedItems {
-		if _, err := tx.Exec(
-			`UPDATE videos
-			SET path = ?, relative_path = ?, category = ?, subcategory = ?, filename = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?`,
-			item.Path,
-			item.RelativePath,
-			item.Category,
-			item.Subcategory,
-			item.Filename,
-			item.ID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not update category.")
-			return
-		}
-	}
-	if err := deleteCategoryIfUnusedTx(tx, from); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "Could not update category.")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"from":        from,
-		"target":      target,
-		"subcategory": from,
-		"updated":     len(movedItems),
-	})
-}
+func (s *server) moveCategory(w http.ResponseWriter, r *http.Request) { s.managedMoveCategory(w, r) }
 
 func moveVideoToLocation(item video, requestedCategory string, requestedSubcategory string) (video, error) {
 	category, subcategory, err := normalizeCategorySelection(requestedCategory, requestedSubcategory)
@@ -1369,6 +860,9 @@ func moveVideoToLocation(item video, requestedCategory string, requestedSubcateg
 	}
 
 	targetDir := locationDirectory(item.Root, category, subcategory)
+	if err := checkFolderPath(item.Root, targetDir); err != nil {
+		return video{}, err
+	}
 	if category != uncategorizedCategory {
 		if err := ensureManagedDirectory(locationDirectory(item.Root, category, "")); err != nil {
 			return video{}, fmt.Errorf("could not create category folder: %w", err)
@@ -1384,7 +878,10 @@ func moveVideoToLocation(item video, requestedCategory string, requestedSubcateg
 		}
 	}
 
-	targetPath := uniqueTargetPath(targetDir, item.Filename)
+	targetPath, err := uniqueTargetPath(targetDir, item.Filename)
+	if err != nil {
+		return video{}, err
+	}
 	if err := os.Rename(item.Path, targetPath); err != nil {
 		return video{}, fmt.Errorf("could not move video: %w", err)
 	}
@@ -1440,6 +937,9 @@ func normalizeSubcategory(value string) (string, error) {
 }
 
 func normalizeFolderName(value string, label string) (string, error) {
+	if strings.EqualFold(value, trashDirectory) || strings.ContainsRune(value, 0) {
+		return "", fmt.Errorf("%s is reserved or invalid", label)
+	}
 	if value == "." || value == ".." || filepath.Base(value) != value {
 		return "", fmt.Errorf("%s must be a single folder name", label)
 	}
@@ -1636,13 +1136,15 @@ func (s *server) lockCategory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func uniqueTargetPath(dir string, filename string) string {
+func uniqueTargetPath(dir string, filename string) (string, error) {
 	ext := filepath.Ext(filename)
 	stem := strings.TrimSuffix(filename, ext)
 	candidate := filepath.Join(dir, filename)
 	for index := 1; ; index++ {
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
+		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("Could not check destination: %w", err)
 		}
 		candidate = filepath.Join(dir, fmt.Sprintf("%s_%d%s", stem, index, ext))
 	}
@@ -1667,7 +1169,7 @@ func (s *server) media(w http.ResponseWriter, r *http.Request) {
 
 	var path, filename, category string
 	var missing int
-	err := s.db.QueryRow("SELECT path, filename, category, missing FROM videos WHERE id = ?", id).Scan(&path, &filename, &category, &missing)
+	err := s.db.QueryRow("SELECT path, filename, category, missing FROM videos WHERE id = ? AND trashed_at IS NULL", id).Scan(&path, &filename, &category, &missing)
 	if errors.Is(err, sql.ErrNoRows) || missing != 0 {
 		http.NotFound(w, r)
 		return
@@ -1707,7 +1209,7 @@ func (s *server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	var mtime float64
 	var missing int
 	err := s.db.QueryRow(
-		"SELECT path, filename, media_type, category, mtime, missing FROM videos WHERE id = ?",
+		"SELECT path, filename, media_type, category, mtime, missing FROM videos WHERE id = ? AND trashed_at IS NULL",
 		id,
 	).Scan(&path, &filename, &mediaType, &category, &mtime, &missing)
 	if errors.Is(err, sql.ErrNoRows) || missing != 0 {
@@ -1781,6 +1283,8 @@ func (s *server) ensureVideoThumbnail(id int64, mediaPath string, mtime float64)
 }
 
 func (s *server) scanFolder(rootValue string) (scanResponse, error) {
+	s.libraryMu.Lock()
+	defer s.libraryMu.Unlock()
 	root, err := filepath.Abs(expandHome(rootValue))
 	if err != nil {
 		return scanResponse{}, err
@@ -1797,7 +1301,7 @@ func (s *server) scanFolder(rootValue string) (scanResponse, error) {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec("UPDATE videos SET missing = 1, updated_at = CURRENT_TIMESTAMP WHERE root = ?", root); err != nil {
+	if _, err := tx.Exec("UPDATE videos SET missing = 1, updated_at = CURRENT_TIMESTAMP WHERE root = ? AND trashed_at IS NULL", root); err != nil {
 		return scanResponse{}, err
 	}
 	if err := ensureCategoryTx(tx, uncategorizedCategory); err != nil {
@@ -1811,6 +1315,9 @@ func (s *server) scanFolder(rootValue string) (scanResponse, error) {
 
 	result := scanResponse{Root: root}
 	for _, entry := range entries {
+		if entry.Name() == trashDirectory {
+			continue
+		}
 		if entry.IsDir() {
 			category, err := normalizeCategory(entry.Name())
 			if err != nil {
@@ -1887,10 +1394,14 @@ func (s *server) scanFolder(rootValue string) (scanResponse, error) {
 	if err := syncCategoriesTx(tx); err != nil {
 		return scanResponse{}, err
 	}
+	if err := tx.QueryRow("SELECT COUNT(*) FROM videos WHERE root = ? AND missing = 1 AND trashed_at IS NULL", root).Scan(&result.Missing); err != nil {
+		return scanResponse{}, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return scanResponse{}, err
 	}
+	result.LastScanAt = time.Now().UTC().Format(time.RFC3339)
 	return result, nil
 }
 
@@ -1968,7 +1479,7 @@ func (s *server) queryVideo(id int64) (video, error) {
 func videoSelectSQL() string {
 	return `SELECT id, path, root, relative_path, category, subcategory, media_type, filename, title, tags,
 		size_bytes, mtime, missing, created_at,
-		favorited, watch_later FROM videos`
+		favorited, watch_later, COALESCE(trashed_at, ''), COALESCE(trash_path, '') FROM videos`
 }
 
 func (s *server) queryVideos(query string, args ...interface{}) ([]video, error) {
@@ -2002,6 +1513,8 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 			&item.CreatedAt,
 			&favorited,
 			&watchLater,
+			&item.TrashedAt,
+			&item.TrashPath,
 		); err != nil {
 			return nil, err
 		}
@@ -2014,6 +1527,10 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 			item.ThumbnailURL = item.StreamURL
 		} else {
 			item.ThumbnailURL = fmt.Sprintf("/thumb/%d", item.ID)
+		}
+		if item.TrashedAt != "" {
+			item.StreamURL = ""
+			item.ThumbnailURL = ""
 		}
 		videos = append(videos, item)
 	}
