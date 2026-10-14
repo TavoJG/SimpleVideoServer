@@ -109,6 +109,19 @@ To move supported media files from subfolders into the base folder:
 
 The script moves media files from subfolders only. If a filename already exists in the base folder, it appends `_1`, `_2`, and so on.
 
+## Linux Mint AMD64 Build
+
+Build a deployable folder for a Linux Mint amd64 virtual machine:
+
+```bash
+./scripts/build_linux_mint.sh
+```
+
+The script installs frontend dependencies if needed, builds the frontend, and
+embeds it into a Linux amd64 Go binary. Copy `dist/linux-mint-amd64` to the VM
+and follow its `INSTALL.txt` to install ffmpeg and configure the systemd service.
+Set your media folder and password before starting the service.
+
 ## Raspberry Pi Build
 
 Build a deployable Raspberry Pi folder from this machine:
@@ -160,11 +173,10 @@ Supported video extensions: `.mp4`, `.m4v`, `.mov`, `.webm`, `.mkv`, `.avi`, `.w
 Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.avif`.
 
 Compatibility: the existing media/category delete endpoints now preserve files in Trash rather than deleting them permanently. Clients needing permanent deletion must first trash an item, then use a Trash deletion endpoint.
-# Visual Classification
+## Automatic Visual Tags and Categories
 
-Optional visual classification runs on a separate GPU machine. See
-[classifier setup and evaluation](classifier/README.md) for model configuration,
-Docker deployment, authentication, and benchmarking. Set `CLASSIFIER_URL` and
-`CLASSIFIER_TOKEN` on this server and install FFmpeg/FFprobe. Parent categories
-offer a classification action and approval queue; approved destinations move
-files into subfolders.
+Run `python3 classifier/classify_media.py` on the media server to tag and classify
+indexed media from explicit JSON tag/category lists. The script calls a local or
+remote Ollama vision model directly, with no classifier HTTP service or web UI.
+See [CLI setup and examples](classifier/README.md). It produces a report by
+default; `--apply` replaces tags, moves files, and updates SQLite automatically.

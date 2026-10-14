@@ -27,7 +27,6 @@ beforeEach(() => {
       "/api/categories": categories,
       "/api/videos": videos.filter((video) => video.category !== "Private"),
       "/api/trash": [],
-      "/api/classification/jobs?category=Travel": { enabled: false, jobs: [], suggestions: [] },
     };
     if (!(path in responses)) throw new Error(`Unexpected request: ${path}`);
     return { ok: true, json: async () => structuredClone(responses[path]) };

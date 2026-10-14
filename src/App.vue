@@ -200,7 +200,6 @@
               <button class="secondary-button" @click="openFolderDialog('move')">Move subcategory</button>
               <button class="delete-button" @click="openFolderDialog('delete')">Trash subcategory</button>
             </div>
-            <ClassificationReview v-if="viewMode === 'category' && canManageSelectedCategory && !selectedSubcategory" :key="selectedCategory" :category="selectedCategory" :subcategories="selectedCategorySubcategories.map(item => item.name)" :api="api" @applied="loadLibrary" />
             <div class="bulk-toolbar" aria-label="Selection tools">
               <label class="toggle-control"><input type="checkbox" :checked="allVisibleSelected" :indeterminate="selectedIds.length > 0 && !allVisibleSelected" :disabled="!filteredVideos.length || powerBusy" @change="selectAllVisible($event.target.checked)" />{{ selectedIds.length }} selected</label>
               <button class="secondary-button" :disabled="!selectedIds.length || powerBusy" @click="clearSelection">Clear</button>
@@ -608,9 +607,7 @@
 </template>
 
 <script>
-import ClassificationReview from './ClassificationReview.vue';
 export default {
-  components: { ClassificationReview },
   data() {
     return {
       compactMode: (() => { try { return localStorage.getItem('video-library-compact') === 'true'; } catch { return false; } })(),

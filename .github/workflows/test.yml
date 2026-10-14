@@ -21,3 +21,4 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: go test ./...
+      - run: python3 -m unittest discover -s classifier -p 'test_*.py'
