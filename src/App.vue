@@ -50,6 +50,10 @@
             <button class="secondary-button" @click="$router.push({ name: 'tags' })">Tags</button>
             <label class="toggle-control"><input v-model="compactMode" type="checkbox" />Compact</label>
           </nav>
+          <div v-if="showCategoryGrid" class="bulk-toolbar" aria-label="Library playback">
+            <button class="secondary-button shuffle-all" type="button" :disabled="loadingLibrary || !accessibleLibraryVideos.length" aria-describedby="shuffle-all-help" @click="shuffleAllVideos">Shuffle all videos</button>
+            <span id="shuffle-all-help" class="message">{{ accessibleLibraryVideos.length ? 'Play videos across unlocked categories.' : 'No unlocked videos available.' }}</span>
+          </div>
           <details v-if="showCategoryGrid" class="category-tag-filters tag-filters">
             <summary>Filter categories by tags <span v-if="activeCategoryTags.length">({{ activeCategoryTags.length }})</span></summary>
             <label for="category-tag-match">Matching</label>
@@ -196,6 +200,10 @@
               </button>
             </div>
 
+            <div class="bulk-toolbar" aria-label="Playback tools">
+              <button class="secondary-button shuffle-toggle" type="button" :aria-pressed="shuffleEnabled" :disabled="!shuffleVideoIds.length" aria-describedby="shuffle-help" @click="toggleShuffle">Shuffle videos</button>
+              <span id="shuffle-help" class="message">{{ shuffleVideoIds.length ? (shuffleEnabled ? 'Shuffle on · videos only' : 'Shuffle off') : 'No videos match this view.' }}</span>
+            </div>
             <div class="bulk-toolbar" aria-label="Selection tools">
               <label class="toggle-control"><input type="checkbox" :checked="allVisibleSelected" :indeterminate="selectedIds.length > 0 && !allVisibleSelected" :disabled="!filteredVideos.length || powerBusy" @change="selectAllVisible($event.target.checked)" />{{ selectedIds.length }} selected</label>
               <button class="secondary-button" :disabled="!selectedIds.length || powerBusy" @click="clearSelection">Clear</button>
@@ -278,7 +286,7 @@
               type="button"
               aria-label="Previous media"
               :disabled="!hasPreviousMedia"
-              :title="hasPreviousMedia ? 'Previous media' : 'First media in this view'"
+              :title="shuffleEnabled ? (hasPreviousMedia ? 'Previous played video' : 'No previous video in shuffle history') : (hasPreviousMedia ? 'Previous media' : 'First media in this view')"
               @click="playPreviousMedia"
             >
               <span class="carousel-arrow">&lt;</span>
@@ -305,7 +313,7 @@
               type="button"
               aria-label="Next media"
               :disabled="!hasNextMedia"
-              :title="hasNextMedia ? 'Next media' : 'Last media in this view'"
+              :title="shuffleEnabled ? (hasNextMedia ? 'Next shuffled video' : 'No other eligible video') : (hasNextMedia ? 'Next media' : 'Last media in this view')"
               @click="playNextMedia"
             >
               <span class="carousel-arrow">&gt;</span>
@@ -521,9 +529,12 @@
 </template>
 
 <script>
+import { createShuffle, nextShuffle } from "./shuffle";
 export default {
   data() {
     return {
+      shuffleEnabled: (() => { try { return localStorage.getItem('video-library-shuffle') === 'true'; } catch { return false; } })(),
+      shuffleState: createShuffle([], null),
       compactMode: (() => { try { return localStorage.getItem('video-library-compact') === 'true'; } catch { return false; } })(),
       selectedIds: [],
       selectionAnchor: null,
@@ -740,6 +751,9 @@ export default {
         this.canViewSelectedCategory
       );
     },
+    accessibleLibraryVideos() { return this.videos.filter(video => video.media_type === 'video' && this.canAccessVideo(video)); },
+    shuffleVideoIds() { return this.filteredVideos.filter(video => video.media_type === 'video').map(video => video.id); },
+    shuffleMembership() { return JSON.stringify([...this.shuffleVideoIds].sort((a, b) => a - b)); },
     selectedIndex() {
       if (!this.selected) return -1;
       return this.filteredVideos.findIndex((video) => video.id === this.selected.id);
@@ -748,9 +762,11 @@ export default {
       return this.selectedIndex >= 0 ? this.selectedIndex + 1 : 0;
     },
     hasPreviousMedia() {
+      if (this.shuffleEnabled) return this.shuffleState.position > 0;
       return this.selectedIndex > 0;
     },
     hasNextMedia() {
+      if (this.shuffleEnabled) return this.shuffleVideoIds.length > 0 && (this.shuffleState.position < this.shuffleState.history.length - 1 || this.shuffleState.queue.length > 0 || this.shuffleVideoIds.some(id => id !== this.selected?.id));
       return this.selectedIndex >= 0 && this.selectedIndex < this.filteredVideos.length - 1;
     },
     storageUsagePercent() {
@@ -764,7 +780,8 @@ export default {
   },
   watch: {
     compactMode(value) { try { localStorage.setItem('video-library-compact', String(value)); } catch { /* Browsing remains available without storage. */ } },
-    selectionContext() { this.clearSelection(); },
+    selectionContext() { this.clearSelection(); this.resetShuffle(); },
+    shuffleMembership() { this.resetShuffle(); },
     filteredVideos() {
       const visible = new Set(this.filteredVideos.map(video => video.id));
       this.selectedIds = this.selectedIds.filter(id => visible.has(id));
@@ -1203,7 +1220,10 @@ export default {
       tile?.focus({ preventScroll: true });
       tile?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     },
-    selectVideo(video, updateRoute = true) {
+    selectVideo(video, updateRoute = true, shuffleNavigation = false) {
+      if (this.shuffleEnabled && !shuffleNavigation && (updateRoute || this.shuffleState.history[this.shuffleState.position] !== video.id)) {
+        this.shuffleState = createShuffle(this.shuffleVideoIds, video.id);
+      }
       this.selected = video;
       this.selectedCategory = video.category || "Uncategorized";
       this.editTitle = video.title;
@@ -1257,12 +1277,45 @@ export default {
         this.bannerMessage = "";
       }, 2600);
     },
+    async shuffleAllVideos() {
+      if (!this.accessibleLibraryVideos.length) return;
+      this.query = '';
+      await this.$router.push({ name: 'browse', query: { type: 'videos' } });
+      await this.$nextTick();
+      this.shuffleEnabled = true;
+      try { localStorage.setItem('video-library-shuffle', 'true'); } catch { /* Playback works without storage. */ }
+      this.resetShuffle();
+      this.playNextMedia();
+    },
+    resetShuffle() {
+      this.shuffleState = createShuffle(this.shuffleVideoIds, this.selected?.id);
+    },
+    toggleShuffle() {
+      this.shuffleEnabled = !this.shuffleEnabled;
+      try { localStorage.setItem('video-library-shuffle', String(this.shuffleEnabled)); } catch { /* Playback works without storage. */ }
+      this.resetShuffle();
+      if (this.shuffleEnabled && this.selected?.media_type !== 'video') this.playNextMedia();
+    },
     playNextMedia() {
+      if (this.shuffleEnabled) {
+        const id = nextShuffle(this.shuffleState, this.shuffleVideoIds, this.selected?.id);
+        const video = this.filteredVideos.find(video => video.id === id);
+        if (video) this.selectVideo(video, true, true);
+        return;
+      }
       if (!this.selected) return;
       const next = this.selectedIndex >= 0 ? this.filteredVideos[this.selectedIndex + 1] : null;
       if (next) this.selectVideo(next);
     },
     playPreviousMedia() {
+      if (this.shuffleEnabled) {
+        if (this.shuffleState.position > 0) {
+          const id = this.shuffleState.history[--this.shuffleState.position];
+          const video = this.filteredVideos.find(video => video.id === id);
+          if (video) this.selectVideo(video, true, true);
+        }
+        return;
+      }
       if (!this.selected) return;
       const previous = this.selectedIndex > 0 ? this.filteredVideos[this.selectedIndex - 1] : null;
       if (previous) this.selectVideo(previous);

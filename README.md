@@ -62,6 +62,10 @@ The scanner reads supported media files at the library root and directly inside 
 
 In the viewer, videos automatically advance when playback ends. Previous and next controls navigate media within the current filtered view.
 
+From the main category page, **Shuffle all videos** starts playback across all unlocked categories and clears existing search and media filters.
+
+Enable **Shuffle videos** in the media-list toolbar to play videos from the current filtered view in random order, skipping images. Each video plays once per cycle before reshuffling; Previous retraces the current shuffle session. A single eligible video stops at its end. The shuffle preference is remembered in this browser, while the queue and history reset on reload or filter changes.
+
 Playback progress and history are no longer stored. On startup, existing databases have their legacy playback progress, duration, last-played, and category last-reproduced columns removed. Other media metadata is preserved.
 
 The media list shows thumbnails. Images use the image file directly. Videos use `ffmpeg` to generate cached JPEG thumbnails on first request. Set `VIDEO_THUMB_DIR` to choose the cache folder; it defaults to `thumbnails`.
