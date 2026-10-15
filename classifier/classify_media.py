@@ -26,12 +26,12 @@ def load_labels(path, categories=False):
         seen.add(label.casefold())
         if categories:
             parts = label.split("/")
-            if len(parts) > 2 or any(not p or p in (".", "..") or "\\" in p or "\0" in p or p.casefold() == ".video-library-trash" for p in parts):
+            if len(parts) > 1 or any(not p or p in (".", "..") or "\\" in p or "\0" in p or p.casefold() == ".video-library-trash" for p in parts):
                 raise ValueError(f"Invalid category path: {label}")
             if parts[0].casefold() == "uncategorized" and label != "Uncategorized":
                 raise ValueError("Use Uncategorized alone for the root folder")
-        elif "," in label or "\0" in label:
-            raise ValueError("Tags cannot contain commas or NUL characters")
+        elif "\0" in label:
+            raise ValueError("Tags cannot contain NUL characters")
     return labels
 
 
@@ -105,9 +105,11 @@ def identity(path):
 
 
 def destination(root, label):
+    if not isinstance(label, str) or not label or label != label.strip() or label in (".", "..") or any(char in label for char in ("/", "\\", "\0")) or label.casefold() == ".video-library-trash":
+        raise ValueError("Category must be a single folder name")
     root = Path(root).resolve(strict=True)
     folder = root
-    for part in ([] if label == "Uncategorized" else label.split("/")):
+    for part in ([] if label == "Uncategorized" else [label]):
         folder = folder / part
         if folder.is_symlink():
             raise ValueError("Destination contains a symlink")
@@ -137,6 +139,16 @@ def relocate(source, folder):
     raise ValueError("Too many filename collisions")
 
 
+def read_tags(value):
+    try:
+        tags = json.loads(value)
+        if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+            return tags
+    except (ValueError, TypeError):
+        pass
+    return [tag.strip() for tag in value.split(",") if tag.strip()]
+
+
 def apply_result(db, snapshot, file_identity, result, tag_mode="replace", do_tags=True, do_categories=True):
     old_path = Path(snapshot["path"])
     moved = None
@@ -145,27 +157,26 @@ def apply_result(db, snapshot, file_identity, result, tag_mode="replace", do_tag
         current = db.execute("SELECT * FROM videos WHERE id=?", (snapshot["id"],)).fetchone()
         if current is None or dict(current) != dict(snapshot) or identity(old_path) != file_identity:
             raise ValueError("Media changed during inference; retry")
-        if current["missing"] or current["trashed_at"]:
-            raise ValueError("Media is missing or trashed")
+        if current["missing"]:
+            raise ValueError("Media is missing")
         if old_path.is_symlink() or not old_path.resolve().is_relative_to(Path(current["root"]).resolve()):
             raise ValueError("Media must be a regular file inside its root")
-        category, subcategory = current["category"], current["subcategory"]
+        category = current["category"]
         path, relative, filename = str(old_path), current["relative_path"], current["filename"]
         if do_categories and result["category"] is not None:
-            parts = result["category"].split("/")
-            category, subcategory = parts[0], parts[1] if len(parts) == 2 else ""
-            if (category, subcategory) != (current["category"], current["subcategory"]):
+            category = result["category"]
+            if category != current["category"]:
                 moved = relocate(old_path, destination(current["root"], result["category"]))
                 path, filename = str(moved), moved.name
                 relative = str(moved.relative_to(Path(current["root"]).resolve()))
             db.execute("INSERT OR IGNORE INTO categories(name) VALUES(?)", (category,))
         new_tags = current["tags"]
         if do_tags:
-            values = ([t.strip() for t in new_tags.split(",") if t.strip()] if tag_mode == "add" else []) + result["tags"]
+            values = (read_tags(new_tags) if tag_mode == "add" else []) + result["tags"]
             seen = set()
-            new_tags = ", ".join(t for t in values if not (t.casefold() in seen or seen.add(t.casefold())))
-        db.execute("UPDATE videos SET path=?,relative_path=?,filename=?,category=?,subcategory=?,tags=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                   (path, relative, filename, category, subcategory, new_tags, current["id"]))
+            new_tags = json.dumps([t for t in values if not (t.casefold() in seen or seen.add(t.casefold()))], ensure_ascii=False)
+        db.execute("UPDATE videos SET path=?,relative_path=?,filename=?,category=?,tags=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (path, relative, filename, category, new_tags, current["id"]))
         db.commit()
         return path
     except BaseException:
@@ -205,7 +216,7 @@ def main(argv=None):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         db = sqlite3.connect(db_path.as_uri() + ("?mode=rw" if args.apply else "?mode=ro"), uri=True, timeout=30)
         db.row_factory = sqlite3.Row
-        query, params = "SELECT * FROM videos WHERE missing=0 AND trashed_at IS NULL", []
+        query, params = "SELECT * FROM videos WHERE missing=0", []
         if args.source_category:
             query += " AND category=?"; params.append(args.source_category)
         if args.id:

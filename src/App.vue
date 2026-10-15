@@ -39,7 +39,8 @@
             </button>
             <p v-if="message" class="message">{{ message }}</p>
             <p v-if="!configuredRoot" class="message">VIDEO_ROOT is not configured. Set a library folder on the server.</p>
-            <p v-if="scanResult" class="message" role="status">Last scan: {{ new Date(scanResult.last_scan_at).toLocaleString() }}. Found {{ scanResult.found }}; added {{ scanResult.added }}; updated {{ scanResult.updated }}; missing {{ scanResult.missing || 0 }}.</p>
+            <p v-for="warning in scanResult?.cleanup_warnings || []" :key="warning" class="message" role="status">Cleanup warning: {{ warning }}</p>
+            <p v-if="scanResult" class="message" role="status">Last scan: {{ new Date(scanResult.last_scan_at).toLocaleString() }}. Found {{ scanResult.found }}; added {{ scanResult.added }}; updated {{ scanResult.updated }}; missing {{ scanResult.missing || 0 }}. Removed {{ scanResult.removed_folders || 0 }} empty folders and {{ scanResult.removed_categories || 0 }} categories.</p>
           </form>
         </section>
 
@@ -47,9 +48,30 @@
           <nav class="power-navigation" aria-label="Library destinations">
             <button class="secondary-button" @click="showCategories">Categories</button>
             <button class="secondary-button" @click="$router.push({ name: 'tags' })">Tags</button>
-            <button class="secondary-button" @click="$router.push({ name: 'trash' })">Trash</button>
             <label class="toggle-control"><input v-model="compactMode" type="checkbox" />Compact</label>
           </nav>
+          <details v-if="showCategoryGrid" class="category-tag-filters tag-filters">
+            <summary>Filter categories by tags <span v-if="activeCategoryTags.length">({{ activeCategoryTags.length }})</span></summary>
+            <label for="category-tag-match">Matching</label>
+            <select id="category-tag-match" :value="categoryTagMatch" @change="setCategoryTagFilters(activeCategoryTags, $event.target.value)"><option value="all">Match all</option><option value="any">Match any</option></select>
+            <label v-for="tag in categoryTagSummaries" :key="tag.name" class="toggle-control"><input type="checkbox" :checked="activeCategoryTags.some(selected => selected.toLowerCase() === tag.name.toLowerCase())" @change="toggleCategoryTag(tag.name)" />{{ tag.name }} ({{ tag.count }} categories)</label>
+            <p v-if="!categoryTagSummaries.length">No category tags in the accessible library.</p>
+          </details>
+          <div v-if="showCategoryGrid && activeCategoryTags.length" class="active-tags" aria-label="Active category tag filters">
+            <button v-for="tag in activeCategoryTags" :key="tag.toLowerCase()" class="secondary-button" @click="removeCategoryTag(tag)">{{ tag }} ×</button>
+            <button class="secondary-button" @click="setCategoryTagFilters([], 'all')">Clear all</button>
+          </div>
+          <details v-if="!showCategoryGrid" class="tag-filters">
+            <summary>Filter by tags <span v-if="activeTags.length">({{ activeTags.length }})</span></summary>
+            <label for="tag-match">Matching</label>
+            <select id="tag-match" :value="tagMatch" @change="setTagFilters(activeTags, $event.target.value)"><option value="all">Match all</option><option value="any">Match any</option></select>
+            <label v-for="tag in tagSummaries" :key="tag.name" class="toggle-control"><input type="checkbox" :checked="activeTags.some(selected => selected.toLowerCase() === tag.name.toLowerCase())" @change="toggleTag(tag.name)" />{{ tag.name }} ({{ tag.count }})</label>
+            <p v-if="!tagSummaries.length">No tags in the accessible library.</p>
+          </details>
+          <div v-if="!showCategoryGrid && activeTags.length" class="active-tags" aria-label="Active tag filters">
+            <button v-for="tag in activeTags" :key="tag.toLowerCase()" class="secondary-button" @click="removeTag(tag)">{{ tag }} ×</button>
+            <button class="secondary-button" @click="setTagFilters([], 'all')">Clear all</button>
+          </div>
           <div class="field-group">
             <label for="search">Search</label>
             <input id="search" v-model="query" placeholder="Title, path, or tag" />
@@ -78,7 +100,7 @@
             </div>
           </div>
 
-          <div v-if="!showCategoryGrid && !isTrash && !isTagView" class="quick-views" aria-label="Library views">
+          <div v-if="!showCategoryGrid && !isTagView" class="quick-views" aria-label="Library views">
             <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
             <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
             <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
@@ -93,7 +115,7 @@
         <div v-else-if="showCategoryGrid" class="category-menu">
           <nav class="category-grid" aria-label="Categories">
             <div
-              v-for="category in categorySummaries"
+              v-for="category in filteredCategorySummaries"
               :key="category.name"
               class="category-card"
               :class="{ active: selectedCategory === category.name }"
@@ -101,43 +123,28 @@
               <button class="category-tile" type="button" :data-category="category.name" :aria-current="selectedCategory === category.name ? 'true' : undefined" @click="selectCategory(category.name)">
                 <span>{{ category.name }}</span>
                 <strong>{{ category.count }}</strong>
+                <span v-if="!category.locked || category.unlocked" class="category-tag-badges"><span v-for="tag in category.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></span>
                 <span v-if="category.locked" class="lock-indicator">
                   {{ category.unlocked ? "Unlocked" : "Locked" }}
                 </span>
               </button>
             </div>
           </nav>
+          <p v-if="!filteredCategorySummaries.length" class="message" role="status">No categories match these filters.</p>
         </div>
 
         <details v-else class="media-browser selected-category-menu" open>
           <summary>
             <span>{{ selectedCategoryLabel }}</span>
             <strong>
-              <template v-if="!isTrash && !isTagView && viewMode === 'category' && !selectedSubcategory && selectedCategorySubcategories.length">
-                {{ selectedCategorySubcategories.length }} folders · {{ filteredVideos.length }} files
-              </template>
-              <template v-else>{{ filteredVideos.length }} files</template>
+              {{ filteredVideos.length }} files
             </strong>
           </summary>
           <div class="selected-category-panel">
-            <button class="back-button" type="button" @click="isTagView ? $router.push({ name: 'tags' }) : selectedSubcategory ? clearSelectedSubcategory() : showCategories()">
-              {{ isTagView ? 'Back to tags' : selectedSubcategory ? `Back to ${selectedCategory}` : "Back to categories" }}
+            <button class="back-button" type="button" @click="isTagView ? $router.push({ name: 'tags' }) : showCategories()">
+              {{ isTagView ? 'Back to tags' : "Back to categories" }}
             </button>
-            <nav v-if="!isTrash && !isTagView && viewMode === 'category' && !selectedSubcategory && canViewSelectedCategory && selectedCategorySubcategories.length" class="subcategory-browser" aria-label="Subfolders">
-              <button
-                v-for="subcategory in selectedCategorySubcategories"
-                :key="subcategory.name"
-                class="folder-entry"
-                type="button"
-                @click="selectSubcategory(subcategory.name)"
-              >
-                <span class="folder-icon" aria-hidden="true">📁</span>
-                <span class="folder-name">{{ subcategory.name }}</span>
-                <small>{{ subcategory.count }} files</small>
-                <span aria-hidden="true">›</span>
-              </button>
-            </nav>
-            <div v-if="!isTrash && !isTagView && isSelectedCategoryLocked" class="category-lock-status">
+            <div v-if="!isTagView && isSelectedCategoryLocked" class="category-lock-status">
               <p class="message">
                 {{ isSelectedCategoryUnlocked ? "Extra password verified for this category." : "This category is locked." }}
               </p>
@@ -152,7 +159,7 @@
               </button>
             </div>
 
-            <form v-if="!isTrash && !isTagView && isSelectedCategoryLocked && !isSelectedCategoryUnlocked" class="unlock-form" @submit.prevent="unlockSelectedCategory">
+            <form v-if="!isTagView && isSelectedCategoryLocked && !isSelectedCategoryUnlocked" class="unlock-form" @submit.prevent="unlockSelectedCategory">
               <div>
                 <label for="category-password">Category password</label>
                 <input
@@ -168,15 +175,9 @@
               <p v-if="categoryUnlockMessage" class="message">{{ categoryUnlockMessage }}</p>
             </form>
 
-            <div v-if="viewMode === 'category' && canManageSelectedCategory && !selectedSubcategory" class="category-management">
-              <button
-                class="secondary-button"
-                type="button"
-                :disabled="movingCategory"
-                @click="requestMoveCategory(selectedCategory)"
-              >
-                Move into category
-              </button>
+            <button v-if="!isTagView && viewMode === 'category' && canViewSelectedCategory" class="secondary-button category-tags-edit" @click="openCategoryTags">Edit category tags</button>
+            <div v-if="!isTagView && canViewSelectedCategory" class="category-tag-badges"><span v-for="tag in selectedCategorySummary?.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></div>
+            <div v-if="viewMode === 'category' && canManageSelectedCategory" class="category-management">
               <button
                 class="secondary-button"
                 type="button"
@@ -195,18 +196,12 @@
               </button>
             </div>
 
-            <div v-if="viewMode === 'category' && selectedSubcategory && canManageSelectedCategory" class="category-management">
-              <button class="secondary-button" @click="openFolderDialog('rename')">Rename subcategory</button>
-              <button class="secondary-button" @click="openFolderDialog('move')">Move subcategory</button>
-              <button class="delete-button" @click="openFolderDialog('delete')">Trash subcategory</button>
-            </div>
             <div class="bulk-toolbar" aria-label="Selection tools">
               <label class="toggle-control"><input type="checkbox" :checked="allVisibleSelected" :indeterminate="selectedIds.length > 0 && !allVisibleSelected" :disabled="!filteredVideos.length || powerBusy" @change="selectAllVisible($event.target.checked)" />{{ selectedIds.length }} selected</label>
               <button class="secondary-button" :disabled="!selectedIds.length || powerBusy" @click="clearSelection">Clear</button>
               <template v-if="selectedIds.length">
-                <button v-for="action in (isTrash ? ['restore', 'purge'] : ['move', 'tags', 'favorited', 'watch_later', 'trash'])" :key="action" class="secondary-button" :disabled="powerBusy" @click="openBulkDialog(action)">{{ actionLabels[action] }}</button>
+                <button v-for="action in ['move', 'tags', 'favorited', 'watch_later', 'delete']" :key="action" class="secondary-button" :disabled="powerBusy" @click="openBulkDialog(action)">{{ actionLabels[action] }}</button>
               </template>
-              <button v-if="isTrash" class="delete-button" :disabled="!trashVideos.length || powerBusy" @click="openBulkDialog('empty')">Empty trash</button>
             </div>
             <div v-if="powerFailures.length" class="failure-panel" role="status">
               <p v-for="failure in powerFailures" :key="failure.id">{{ failure.title || `Media ${failure.id}` }}: {{ failure.error }}</p>
@@ -220,10 +215,10 @@
                 class="video-row"
                 :class="{ active: selected && selected.id === video.id, checked: selectedIds.includes(video.id) }"
                 role="listitem"
-                @click="!isTrash && selectVideo(video)"
+                @click="selectVideo(video)"
               >
                 <input class="row-checkbox" type="checkbox" :aria-label="`Select ${video.title}`" :checked="selectedIds.includes(video.id)" :disabled="powerBusy" @click.stop="selectionShift = $event.shiftKey" @change="toggleSelection(video.id, { target: $event.target, shiftKey: selectionShift })" />
-                <button class="media-open" :disabled="isTrash" :aria-label="`Open ${video.title}`" @click.stop="selectVideo(video)">
+                <button class="media-open" :aria-label="`Open ${video.title}`" @click.stop="selectVideo(video)">
                 <span class="thumbnail-frame" aria-hidden="true">
                   <img
                     v-if="video.thumbnail_url && !failedThumbnails[video.id]"
@@ -244,11 +239,10 @@
                     <span v-if="video.watch_later" class="media-type icon-badge" title="Watch Later">◷</span>
                   </span>
                   <span class="video-path">{{ video.relative_path }}</span>
-                  <span v-if="isTrash" class="video-path">Trashed {{ new Date(video.trashed_at).toLocaleString() }} · {{ video.trash_path }}</span>
                 </span>
                 </button>
-                <span v-if="!isTrash" class="tag-line row-tags"><button v-for="tag in video.tags" :key="tag" @click.stop="$router.push({ name: 'tag', params: { tag } })">{{ tag }}</button></span>
-                <span v-if="!isTrash" class="row-actions" @click.stop>
+                <span class="tag-line row-tags"><button v-for="tag in video.tags" :key="tag" @click.stop="$router.push({ name: 'tag', params: { tag } })">{{ tag }}</button></span>
+                <span class="row-actions" @click.stop>
                   <button
                     class="icon-button compact"
                     type="button"
@@ -333,7 +327,7 @@
               </div>
               <div>
                 <label for="tags">Tags</label>
-                <input id="tags" v-model="editTags" placeholder="family, travel, 2024" />
+                <textarea id="tags" v-model="editTags" placeholder="One tag per line" rows="3"></textarea>
               </div>
               <div>
                 <label for="category">Category</label>
@@ -372,51 +366,6 @@
                   </button>
                 </div>
               </div>
-              <div>
-                <label for="subcategory">Subcategory</label>
-                <div class="category-editor">
-                  <select
-                    v-if="!customSubcategory"
-                    id="subcategory"
-                    v-model="editSubcategory"
-                    :disabled="editCategory === 'Uncategorized'"
-                  >
-                    <option value="">No subcategory</option>
-                    <option v-for="subcategory in editorSubcategories" :key="subcategory" :value="subcategory">
-                      {{ subcategory }}
-                    </option>
-                  </select>
-                  <input
-                    v-else
-                    id="subcategory"
-                    v-model="editSubcategory"
-                    placeholder="New subcategory"
-                    autocomplete="off"
-                    :disabled="editCategory === 'Uncategorized'"
-                  />
-                  <button
-                    v-if="!customSubcategory"
-                    class="icon-button"
-                    type="button"
-                    title="Create subcategory"
-                    aria-label="Create subcategory"
-                    :disabled="editCategory === 'Uncategorized'"
-                    @click="enableCustomSubcategory"
-                  >
-                    +
-                  </button>
-                  <button
-                    v-else
-                    class="icon-button"
-                    type="button"
-                    title="Use existing subcategory"
-                    aria-label="Use existing subcategory"
-                    @click="useExistingSubcategory"
-                  >
-                    ↩
-                  </button>
-                </div>
-              </div>
               <div class="details-actions">
                 <label class="toggle-control">
                   <input v-model="editFavorited" type="checkbox" />
@@ -443,6 +392,16 @@
         </div>
       </section>
 
+      <div v-if="categoryTagsDialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="category-tags-title" @click.self="closeCategoryTags">
+        <form class="confirm-dialog" @submit.prevent="saveCategoryTags">
+          <h2 id="category-tags-title">Edit category tags</h2>
+          <p>{{ categoryTagsDialog }}</p>
+          <label for="category-tags-input">One tag per line</label>
+          <textarea id="category-tags-input" v-model="categoryTagsDraft" rows="4" :disabled="savingCategoryTags"></textarea>
+          <p v-if="categoryTagsError" class="message" role="alert">{{ categoryTagsError }}</p>
+          <div class="dialog-actions"><button class="secondary-button" type="button" :disabled="savingCategoryTags" @click="closeCategoryTags">Cancel</button><button class="save-button" type="submit" :disabled="savingCategoryTags">{{ savingCategoryTags ? 'Saving...' : 'Save tags' }}</button></div>
+        </form>
+      </div>
       <div
         v-if="pendingDelete"
         class="dialog-backdrop"
@@ -452,9 +411,10 @@
         @click.self="cancelDelete"
       >
         <div class="confirm-dialog">
-          <h2 id="delete-dialog-title">Move media to trash?</h2>
+          <h2 id="delete-dialog-title">Permanently delete media?</h2>
+          <p>This cannot be undone.</p>
           <p>
-            Move to trash:
+            Permanently delete:
             <strong>{{ pendingDelete.title || pendingDelete.filename }}</strong>.
           </p>
           <div class="dialog-actions">
@@ -502,40 +462,6 @@
       </div>
 
       <div
-        v-if="pendingMoveCategory"
-        class="dialog-backdrop"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="move-category-dialog-title"
-        @click.self="cancelMoveCategory"
-      >
-        <form class="confirm-dialog" @submit.prevent="confirmMoveCategory">
-          <h2 id="move-category-dialog-title">Move category</h2>
-          <p>
-            Move <strong>{{ pendingMoveCategory }}</strong> inside another category as a subcategory.
-          </p>
-          <div>
-            <label for="move-category-target">Destination category</label>
-            <select id="move-category-target" v-model="moveCategoryTarget">
-              <option value="" disabled>Select a category</option>
-              <option v-for="category in moveCategoryTargets" :key="category" :value="category">
-                {{ category }}
-              </option>
-            </select>
-          </div>
-          <p class="message">Only flat categories can be moved with the current two-level folder structure.</p>
-          <div class="dialog-actions">
-            <button class="secondary-button" type="button" :disabled="movingCategory" @click="cancelMoveCategory">
-              Cancel
-            </button>
-            <button class="save-button" type="submit" :disabled="movingCategory || !moveCategoryTarget">
-              {{ movingCategory ? "Moving" : "Move category" }}
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <div
         v-if="pendingDeleteCategory"
         class="dialog-backdrop"
         role="dialog"
@@ -546,8 +472,8 @@
         <div class="confirm-dialog">
           <h2 id="delete-category-dialog-title">Delete category?</h2>
           <p>
-            Move every media file to trash in
-            <strong>{{ pendingDeleteCategory }}</strong>.
+            Permanently delete indexed media files in
+            <strong>{{ pendingDeleteCategory }}</strong>. This cannot be undone.
           </p>
           <div v-if="powerFailures.length" class="failure-panel" role="status">
             <p v-for="failure in powerFailures" :key="failure.id">{{ failure.title || `Media ${failure.id}` }}: {{ failure.error }}</p>
@@ -570,28 +496,16 @@
       </div>
       <div v-if="powerDialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="power-dialog-title" @click.self="closePowerDialog">
         <form class="confirm-dialog" @submit.prevent="submitPowerDialog">
-          <h2 id="power-dialog-title">{{ powerDialog.folder ? `${actionLabels[powerDialog.action] || powerDialog.action} subcategory` : actionLabels[powerDialog.action] }}</h2>
-          <p v-if="powerDialog.folder">{{ powerDialog.category }} / {{ powerDialog.subcategory }}</p>
-          <p v-else>{{ powerDialog.ids.length }} media files</p>
-          <p v-if="['purge', 'empty'].includes(powerDialog.action)">These files will be permanently deleted. This cannot be undone.</p>
-          <p v-if="powerDialog.action === 'trash' || powerDialog.action === 'delete'">Files can be restored from Trash.</p>
-          <template v-if="['move', 'restore'].includes(powerDialog.action)">
-            <label v-if="powerDialog.action === 'restore'" class="toggle-control"><input v-model="powerDialog.original" type="checkbox" />Restore to original location</label>
-            <template v-if="!powerDialog.original">
+          <h2 id="power-dialog-title">{{ actionLabels[powerDialog.action] }}</h2>
+          <p>{{ powerDialog.ids.length }} media files</p>
+          <p v-if="powerDialog.action === 'delete'">These files will be permanently deleted. This cannot be undone.</p>
+          <template v-if="powerDialog.action === 'move'">
               <label for="power-category">Destination category</label>
               <input id="power-category" v-model="powerDialog.targetCategory" list="power-categories" required autocomplete="off" />
               <datalist id="power-categories"><option v-for="category in availableDestinations" :key="category" :value="category" /></datalist>
-              <label for="power-subcategory">Destination subcategory</label>
-              <input id="power-subcategory" v-model="powerDialog.targetSubcategory" list="power-subcategories" :disabled="powerDialog.targetCategory === 'Uncategorized'" autocomplete="off" />
-              <datalist id="power-subcategories"><option v-for="folder in destinationSubcategories" :key="folder" :value="folder" /></datalist>
-              <p v-if="powerDialog.folder" class="message">Leave subcategory empty to promote this folder to a new top-level category.</p>
-            </template>
-          </template>
-          <template v-if="powerDialog.action === 'rename'">
-            <label for="power-name">New subcategory name</label><input id="power-name" v-model="powerDialog.name" required autocomplete="off" />
           </template>
           <template v-if="powerDialog.action === 'tags'">
-            <label for="power-tags">Tags</label><input id="power-tags" v-model="powerDialog.tags" />
+            <label for="power-tags">Tags</label><textarea id="power-tags" v-model="powerDialog.tags" placeholder="One tag per line" rows="3"></textarea>
             <label for="power-tag-mode">Tag operation</label><select id="power-tag-mode" v-model="powerDialog.tagMode"><option value="add">Add</option><option value="remove">Remove</option><option value="replace">Replace</option></select>
           </template>
           <label v-if="['favorited', 'watch_later'].includes(powerDialog.action)" class="toggle-control"><input v-model="powerDialog.value" type="checkbox" />{{ actionLabels[powerDialog.action] }}</label>
@@ -614,24 +528,27 @@ export default {
       selectedIds: [],
       selectionAnchor: null,
       selectionShift: false,
-      trashVideos: [],
       powerDialog: null,
       powerBusy: false,
       powerError: '',
       powerFailures: [],
       retryPayload: null,
-      actionLabels: { move: 'Move', tags: 'Edit tags', favorited: 'Favorite', watch_later: 'Watch Later', trash: 'Move to trash', restore: 'Restore', purge: 'Delete permanently', empty: 'Empty trash', rename: 'Rename', delete: 'Trash' },
+      actionLabels: { move: 'Move', tags: 'Edit tags', favorited: 'Favorite', watch_later: 'Watch Later', rename: 'Rename', delete: 'Delete permanently' },
       categorySummariesData: [],
+      categoryTagsDialog: null,
+      categoryTagsDraft: '',
+      categoryTagsError: '',
+      savingCategoryTags: false,
       videos: [],
+      categoryMappings: [],
+      mappingsLoaded: false,
       selected: null,
       editTitle: "",
       editTags: "",
       editCategory: "",
-      editSubcategory: "",
       editFavorited: false,
       editWatchLater: false,
       customCategory: false,
-      customSubcategory: false,
       configuredRoot: "",
       storageUsage: null,
       authChecked: false,
@@ -645,7 +562,6 @@ export default {
       sortMode: "library",
       viewMode: "category",
       selectedCategory: "Uncategorized",
-      selectedSubcategory: "",
       message: "",
       scanning: false,
       scanResult: null,
@@ -660,9 +576,6 @@ export default {
       pendingRenameCategory: null,
       renameCategoryName: "",
       renamingCategory: false,
-      pendingMoveCategory: null,
-      moveCategoryTarget: "",
-      movingCategory: false,
       pendingDeleteCategory: null,
       deletingCategory: false,
       categoryPassword: "",
@@ -671,12 +584,18 @@ export default {
     };
   },
   computed: {
-    isTrash() { return this.$route.name === 'trash'; },
-    isTagView() { return ['tags', 'tag', 'tag-media'].includes(this.$route.name); },
+    isTagView() { return ['tags', 'tag', 'tag-media', 'browse', 'browse-media'].includes(this.$route.name); },
+    activeTags() {
+      const query = this.$route.query.tag;
+      const values = [...(this.$route.params.tag ? [String(this.$route.params.tag)] : []), ...(Array.isArray(query) ? query : query ? [query] : [])];
+      const seen = new Set();
+      return values.map(String).map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase()) && seen.add(tag.toLowerCase()));
+    },
+    tagMatch() { return this.$route.query.match === 'any' ? 'any' : 'all'; },
     tagSummaries() {
       const counts = new Map();
       for (const video of this.videos) {
-        if (!this.canAccessVideo(video) || video.trashed_at) continue;
+        if (!this.canAccessVideo(video)) continue;
         const seen = new Set();
         for (const tag of video.tags || []) {
           const key = tag.toLowerCase();
@@ -691,12 +610,11 @@ export default {
     },
     allVisibleSelected() { return this.filteredVideos.length > 0 && this.filteredVideos.every(video => this.selectedIds.includes(video.id)); },
     selectionContext() {
-      return JSON.stringify([this.$route.params.category, this.$route.params.subcategory, this.$route.params.tag, this.isTrash, this.isTagView, this.showCategoryGrid, this.viewMode, this.mediaFilter, this.query]);
+      return JSON.stringify([this.activeTags, this.tagMatch, this.$route.params.category, this.$route.params.tag, this.isTagView, this.showCategoryGrid, this.viewMode, this.mediaFilter, this.query]);
     },
     availableDestinations() { return this.categorySummaries.filter(category => !category.locked || category.unlocked).map(category => category.name); },
-    destinationSubcategories() { return (this.categorySummaries.find(category => category.name === this.powerDialog?.targetCategory)?.subcategories || []).map(folder => folder.name); },
     activeDialog() {
-      return this.powerDialog || this.pendingDelete || this.pendingRenameCategory || this.pendingMoveCategory || this.pendingDeleteCategory;
+      return this.categoryTagsDialog || this.powerDialog || this.pendingDelete || this.pendingRenameCategory || this.pendingDeleteCategory;
     },
     browserTitle() {
       if (!this.authenticated || this.showCategoryGrid) return "Video Library";
@@ -707,26 +625,26 @@ export default {
     emptyMediaMessage() {
       if (this.loadingLibrary) return "Loading media...";
       if (!this.configuredRoot) return "No library folder is configured.";
-      if (this.isTrash) return "Trash is empty.";
-      if (this.isTagView) return "No media has this tag.";
+      if (this.isTagView) return "No media matches these tags.";
       if (this.query.trim() || this.mediaFilter !== "all") return "No media matches these filters.";
       if (this.viewMode !== "category") return `No media in ${this.selectedCategoryLabel}.`;
-      if (this.selectedSubcategory) return "This subcategory has no media.";
-      return this.selectedCategorySubcategories.length ? "This category has no direct media. Open a subcategory to browse its files." : "This category has no media.";
+      return "This category has no media.";
     },
     showCategoryGrid() {
       return this.$route.name === "categories";
     },
     filteredVideos() {
       const query = this.query.trim().toLowerCase();
-      const filtered = (this.isTrash ? this.trashVideos : this.videos).filter((video) => {
+      const filtered = this.videos.filter((video) => {
         if (!this.canAccessVideo(video)) return false;
-        if (!this.isTrash && video.trashed_at) return false;
-        if (this.isTagView && !(video.tags || []).some(tag => tag.toLowerCase() === String(this.$route.params.tag || '').toLowerCase())) return false;
+        if (this.activeTags.length) {
+          const available = new Set((video.tags || []).map(tag => tag.toLowerCase()));
+          const matches = this.activeTags.map(tag => available.has(tag.toLowerCase()));
+          if (this.tagMatch === 'any' ? !matches.some(Boolean) : !matches.every(Boolean)) return false;
+        }
         const category = video.category || "Uncategorized";
-        if (this.viewMode === "category" && !this.isTagView && !this.isTrash) {
+        if (this.viewMode === "category" && !this.isTagView) {
           if (category !== this.selectedCategory) return false;
-          if ((video.subcategory || "") !== this.selectedSubcategory) return false;
         } else if (this.viewMode === "favorites") {
           if (!video.favorited) return false;
         } else if (this.viewMode === "watch_later") {
@@ -743,7 +661,6 @@ export default {
           video.relative_path,
           video.media_type,
           category,
-          video.subcategory || "",
           video.tags.join(" "),
         ]
           .join(" ")
@@ -751,6 +668,39 @@ export default {
         return haystack.includes(query);
       });
       return this.sortVideos(filtered);
+    },
+    activeCategoryTags() {
+      const query = this.$route.query.category_tag;
+      const values = Array.isArray(query) ? query : query ? [query] : [];
+      const seen = new Set();
+      return values.map(String).map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase()) && seen.add(tag.toLowerCase()));
+    },
+    categoryTagMatch() { return this.$route.query.category_match === 'any' ? 'any' : 'all'; },
+    categoryTagSummaries() {
+      const counts = new Map();
+      for (const category of this.categorySummaries) {
+        if (category.locked && !category.unlocked) continue;
+        const seen = new Set();
+        for (const tag of category.tags || []) {
+          const key = tag.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const entry = counts.get(key) || { name: tag, count: 0 };
+          entry.count++; counts.set(key, entry);
+        }
+      }
+      return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    filteredCategorySummaries() {
+      const query = this.query.trim().toLowerCase();
+      return this.categorySummaries.filter(category => {
+        if (query && !category.name.toLowerCase().includes(query)) return false;
+        if (!this.activeCategoryTags.length) return true;
+        if (category.locked && !category.unlocked) return false;
+        const tags = new Set((category.tags || []).map(tag => tag.toLowerCase()));
+        const matches = this.activeCategoryTags.map(tag => tags.has(tag.toLowerCase()));
+        return this.categoryTagMatch === 'any' ? matches.some(Boolean) : matches.every(Boolean);
+      });
     },
     categorySummaries() {
       return this.categorySummariesData;
@@ -761,46 +711,29 @@ export default {
     selectedCategorySummary() {
       return this.categorySummaries.find((category) => category.name === this.selectedCategory) || null;
     },
-    selectedCategorySubcategories() {
-      return this.selectedCategorySummary?.subcategories || [];
-    },
     selectedCategoryLabel() {
       const labels = {
         favorites: "Favorites",
         watch_later: "Watch Later",
         recent_added: "Recently Added",
       };
-      if (this.isTrash) return 'Trash';
-      if (this.isTagView) return this.$route.params.tag ? `Tag: ${this.$route.params.tag}` : 'Tags';
+      if (this.isTagView) return this.activeTags.length ? `Tags: ${this.activeTags.join(' · ')}` : 'All media';
       if (this.viewMode !== "category") return labels[this.viewMode] || "Library";
-      return this.selectedSubcategory ? `${this.selectedCategory} / ${this.selectedSubcategory}` : this.selectedCategory;
-    },
-    editorSubcategories() {
-      const summary = this.categorySummaries.find((category) => category.name === this.editCategory);
-      return (summary?.subcategories || []).map((subcategory) => subcategory.name);
-    },
-    moveCategoryTargets() {
-      return this.categorySummaries
-        .filter((category) => {
-          if (category.name === this.selectedCategory) return false;
-          if (category.name === "Uncategorized") return false;
-          return !category.locked || category.unlocked;
-        })
-        .map((category) => category.name);
+      return this.selectedCategory;
     },
     isSelectedCategoryLocked() {
-      if (this.isTagView || this.isTrash || this.viewMode !== 'category') return false;
+      if (this.isTagView || this.viewMode !== 'category') return false;
       return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.locked);
     },
     isSelectedCategoryUnlocked() {
       return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.unlocked);
     },
     canViewSelectedCategory() {
-      if (this.isTrash || this.isTagView || this.viewMode !== 'category') return true;
+      if (this.isTagView || this.viewMode !== 'category') return true;
       return !this.isSelectedCategoryLocked || this.isSelectedCategoryUnlocked;
     },
     canManageSelectedCategory() {
-      if (this.isTagView || this.isTrash || this.viewMode !== 'category') return false;
+      if (this.isTagView || this.viewMode !== 'category') return false;
       return (
         this.selectedCategory !== "Uncategorized" &&
         this.categories.includes(this.selectedCategory) &&
@@ -844,7 +777,7 @@ export default {
         if (value) {
           const dialog = this.$el.querySelector('[role="dialog"]');
           dialog?.setAttribute("tabindex", "-1");
-          (dialog?.querySelector("input, select, button:not(:disabled)") || dialog)?.focus();
+          (dialog?.querySelector("input, textarea, select, button:not(:disabled)") || dialog)?.focus();
         } else {
           const opener = this.dialogOpener;
           if (opener?.isConnected) opener.focus();
@@ -855,13 +788,6 @@ export default {
     },
     $route() {
       this.syncRouteState();
-      if (this.isTrash) this.loadTrash().catch(error => this.showBanner(error.message, 'error'));
-    },
-    editCategory(value) {
-      if (value === "Uncategorized") {
-        this.editSubcategory = "";
-        this.customSubcategory = false;
-      }
     },
     query() {
       if (this.showCategoryGrid) return;
@@ -897,6 +823,55 @@ export default {
     clearTimeout(this.bannerTimer);
   },
   methods: {
+    setCategoryTagFilters(tags, match = this.categoryTagMatch) {
+      this.$router.push({ name: 'categories', query: { ...this.$route.query, category_tag: tags.length ? tags : undefined, category_match: tags.length && match === 'any' ? 'any' : undefined } });
+    },
+    toggleCategoryTag(tag) {
+      const exists = this.activeCategoryTags.some(item => item.toLowerCase() === tag.toLowerCase());
+      this.setCategoryTagFilters(exists ? this.activeCategoryTags.filter(item => item.toLowerCase() !== tag.toLowerCase()) : [...this.activeCategoryTags, tag]);
+    },
+    removeCategoryTag(tag) { this.setCategoryTagFilters(this.activeCategoryTags.filter(item => item.toLowerCase() !== tag.toLowerCase())); },
+    openCategoryTags() {
+      if (this.activeDialog || !this.canViewSelectedCategory || !this.selectedCategorySummary) return;
+      this.categoryTagsDialog = this.selectedCategory;
+      this.categoryTagsDraft = (this.selectedCategorySummary.tags || []).join('\n');
+      this.categoryTagsError = '';
+    },
+    closeCategoryTags() { if (!this.savingCategoryTags) { this.categoryTagsDialog = null; this.categoryTagsError = ''; } },
+    async saveCategoryTags() {
+      if (!this.categoryTagsDialog || this.savingCategoryTags) return;
+      this.savingCategoryTags = true; this.categoryTagsError = '';
+      try {
+        const result = await this.api('/api/categories/tags', { method: 'PATCH', body: JSON.stringify({ category: this.categoryTagsDialog, tags: this.parseTagLines(this.categoryTagsDraft) }) });
+        const category = this.categorySummariesData.find(item => item.name === result.category);
+        if (category) category.tags = result.tags;
+        this.categoryTagsDialog = null;
+        this.showBanner('Category tags saved.');
+      } catch (error) { this.categoryTagsError = error.message; }
+      finally { this.savingCategoryTags = false; }
+    },
+
+    parseTagLines(value) {
+      const seen = new Set();
+      return value.split(/\r?\n/).map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase()) && seen.add(tag.toLowerCase()));
+    },
+    setTagFilters(tags, match = this.tagMatch) {
+      const query = { ...this.$route.query, tag: tags.length ? tags : undefined, match: tags.length && match === 'any' ? 'any' : undefined };
+      const name = this.isTagView ? 'browse' : this.$route.name === 'categories' ? 'browse' : this.$route.params.category ? 'category' : 'browse';
+      this.selected = null;
+      this.$router.push({ name, params: name === 'category' ? { category: this.$route.params.category } : {}, query });
+    },
+    toggleTag(tag) {
+      const existing = this.activeTags.find(item => item.toLowerCase() === tag.toLowerCase());
+      this.setTagFilters(existing ? this.activeTags.filter(item => item.toLowerCase() !== tag.toLowerCase()) : [...this.activeTags, tag]);
+    },
+    removeTag(tag) { this.setTagFilters(this.activeTags.filter(item => item.toLowerCase() !== tag.toLowerCase())); },
+    async loadCategoryMappings() {
+      const mappings = await this.api('/api/category-migrations');
+      this.categoryMappings = Array.isArray(mappings) ? mappings : [];
+      this.mappingsLoaded = true;
+    },
+
     canAccessVideo(video) {
       const category = this.categorySummaries.find(item => item.name === (video.category || 'Uncategorized'));
       return !category?.locked || category.unlocked;
@@ -922,25 +897,14 @@ export default {
       this.selectionAnchor = id;
       this.selectionShift = false;
     },
-    async loadTrash() {
-      const videos = await this.api('/api/trash');
-      this.trashVideos = Array.isArray(videos) ? videos : [];
-    },
     openBulkDialog(action) {
       if (this.powerBusy || this.activeDialog) return;
-      const ids = action === 'empty' ? this.trashVideos.filter(video => this.canAccessVideo(video)).map(video => video.id) : [...this.selectedIds];
+      const ids = [...this.selectedIds];
       if (!ids.length) return;
       this.powerFailures = [];
       this.retryPayload = null;
       this.powerError = '';
-      this.powerDialog = { action, ids, targetCategory: this.availableDestinations[0] || 'Uncategorized', targetSubcategory: '', original: action === 'restore', tags: '', tagMode: 'add', value: true };
-    },
-    openFolderDialog(action) {
-      if (this.powerBusy || !this.canManageSelectedCategory || !this.selectedSubcategory) return;
-      this.powerFailures = [];
-      this.retryPayload = null;
-      this.powerError = '';
-      this.powerDialog = { action, folder: true, category: this.selectedCategory, subcategory: this.selectedSubcategory, name: this.selectedSubcategory, targetCategory: this.selectedCategory, targetSubcategory: '', original: false };
+      this.powerDialog = { action, ids, targetCategory: this.availableDestinations[0] || 'Uncategorized', tags: '', tagMode: 'add', value: true };
     },
     closePowerDialog() { if (!this.powerBusy) { this.powerDialog = null; this.powerError = ''; } },
     async submitPowerDialog() {
@@ -948,88 +912,54 @@ export default {
       const dialog = this.powerDialog;
       if (dialog.retry) { await this.retryFailures(); return; }
       const category = dialog.targetCategory?.trim();
-      const subcategory = category === 'Uncategorized' ? '' : dialog.targetSubcategory?.trim() || '';
-      if (['move', 'restore'].includes(dialog.action) && !dialog.original) {
-        if (!category || /[/\\]/.test(category) || /[/\\]/.test(subcategory) || ['.', '..'].includes(category) || ['.', '..'].includes(subcategory)) {
-          this.powerError = 'Enter a category and optional subcategory using single folder names.';
-          return;
-        }
+      if (dialog.action === 'move') {
+        if (!category || /[/\\]/.test(category) || ['.', '..'].includes(category)) { this.powerError = 'Enter a single category name.'; return; }
         const target = this.categorySummaries.find(item => item.name === category);
         if (target?.locked && !target.unlocked) { this.powerError = 'Unlock the destination category first.'; return; }
       }
-      if (dialog.folder) {
-        const payload = { category: dialog.category, subcategory: dialog.subcategory };
-        if (dialog.action === 'rename') {
-          const name = dialog.name.trim();
-          if (!name || /[/\\]/.test(name) || ['.', '..'].includes(name)) { this.powerError = 'Enter a single subcategory name.'; return; }
-          payload.name = name;
-        } else if (dialog.action === 'move') {
-          payload.target_category = category;
-          payload.target_subcategory = subcategory;
-        }
-        this.powerBusy = true;
-        try {
-          const result = await this.api(`/api/subcategories/${dialog.action}`, { method: 'POST', body: JSON.stringify(payload) });
-          if (dialog.action === 'delete') this.recordResults(result, this.videos.filter(video => video.category === dialog.category && video.subcategory === dialog.subcategory).map(video => video.id), { action: 'trash' });
-          await this.loadLibrary();
-          if (dialog.action !== 'delete' || !this.powerFailures.length) {
-            await this.$router.push({ name: dialog.action === 'rename' || (dialog.action === 'move' && subcategory) ? 'subcategory' : 'category', params: { category: dialog.action === 'move' ? category : dialog.category, subcategory: dialog.action === 'rename' ? payload.name : subcategory } });
-          }
-          if (dialog.action === 'delete' && this.powerFailures.length) dialog.retry = true;
-          else this.powerDialog = null;
-          this.showBanner(result.folder_retained ? 'Media processed; folder retained.' : 'Subcategory updated.');
-        } catch (error) { this.powerError = error.message; }
-        finally { this.powerBusy = false; }
-        return;
-      }
       const payload = { ids: dialog.ids, action: dialog.action };
-      if (['move', 'restore'].includes(dialog.action) && !dialog.original) Object.assign(payload, { category, subcategory });
-      if (dialog.action === 'tags') Object.assign(payload, { tags: [...new Set(dialog.tags.split(',').map(tag => tag.trim()).filter(Boolean))], tag_mode: dialog.tagMode });
+      if (dialog.action === 'move') payload.category = category;
+      if (dialog.action === 'tags') Object.assign(payload, { tags: this.parseTagLines(dialog.tags), tag_mode: dialog.tagMode });
       if (['favorited', 'watch_later'].includes(dialog.action)) payload.value = dialog.value;
-      await this.runBulk(payload, dialog.action === 'empty');
+      await this.runBulk(payload);
     },
     recordResults(response, ids, payload) {
       const results = Array.isArray(response) ? response : response.results || [];
-      const items = [...this.videos, ...this.trashVideos];
+      const items = this.videos;
       this.powerFailures = ids.flatMap(id => {
         const result = results.find(item => item.id === id);
         if (result?.success) return [];
         return [{ id, title: items.find(item => item.id === id)?.title, error: result?.error || 'No result returned for this item.' }];
       });
-      this.retryPayload = this.powerFailures.length ? { ...payload, ids: this.powerFailures.map(item => item.id), action: payload.action === 'empty' ? 'purge' : payload.action } : null;
+      this.retryPayload = this.powerFailures.length ? { ...payload, ids: this.powerFailures.map(item => item.id), action: payload.action } : null;
       this.selectedIds = this.selectedIds.filter(id => this.powerFailures.some(item => item.id === id));
       const succeeded = new Set(results.filter(item => item.success).map(item => item.id));
-      if (payload.action === 'trash') this.videos = this.videos.filter(item => !succeeded.has(item.id));
-      if (['purge', 'restore', 'empty'].includes(payload.action)) this.trashVideos = this.trashVideos.filter(item => !succeeded.has(item.id));
+      if (payload.action === 'delete') this.videos = this.videos.filter(item => !succeeded.has(item.id));
       for (const result of results) {
-        if (!result.success || !result.video || ['trash', 'purge', 'empty'].includes(payload.action)) continue;
+        if (!result.success || !result.video || payload.action === 'delete') continue;
         const index = this.videos.findIndex(item => item.id === result.id);
         if (index >= 0) this.videos.splice(index, 1, result.video);
         else this.videos.push(result.video);
       }
       return ids.length - this.powerFailures.length;
     },
-    async runBulk(payload, empty = false) {
+    async runBulk(payload) {
       if (this.powerBusy) return;
       this.powerBusy = true;
       this.powerError = '';
       try {
-        let response;
-        if (empty) response = await this.api('/api/trash/empty', { method: 'POST', body: JSON.stringify({}) });
-        else {
-          const results = [];
-          for (let start = 0; start < payload.ids.length; start += 1000) {
-            const ids = payload.ids.slice(start, start + 1000);
-            try {
-              const batch = await this.api('/api/videos/bulk', { method: 'POST', body: JSON.stringify({ ...payload, ids }) });
-              results.push(...(Array.isArray(batch) ? batch : batch.results || []));
-            } catch (error) {
-              results.push(...ids.map(id => ({ id, success: false, error: error.message })));
-              if (!this.authenticated) break;
-            }
+        const results = [];
+        for (let start = 0; start < payload.ids.length; start += 1000) {
+          const ids = payload.ids.slice(start, start + 1000);
+          try {
+            const batch = await this.api('/api/videos/bulk', { method: 'POST', body: JSON.stringify({ ...payload, ids }) });
+            results.push(...(Array.isArray(batch) ? batch : batch.results || []));
+          } catch (error) {
+            results.push(...ids.map(id => ({ id, success: false, error: error.message })));
+            if (!this.authenticated) break;
           }
-          response = { results };
         }
+        const response = { results };
         const count = this.recordResults(response, payload.ids, payload);
         if (!this.powerFailures.length) { this.powerDialog = null; this.pendingDeleteCategory = null; }
         else if (this.powerDialog) this.powerDialog.retry = true;
@@ -1039,7 +969,7 @@ export default {
       } catch (error) {
         this.powerError = error.message;
         this.powerFailures = payload.ids.map(id => ({ id, error: error.message }));
-        this.retryPayload = { ...payload, action: empty ? 'purge' : payload.action };
+        this.retryPayload = { ...payload, action: payload.action };
       } finally { this.powerBusy = false; }
     },
     async retryFailures() {
@@ -1052,11 +982,11 @@ export default {
           this.closePowerDialog();
           this.cancelDelete();
           this.cancelRenameCategory();
-          this.cancelMoveCategory();
+          this.closeCategoryTags();
           this.cancelDeleteCategory();
         } else if (event.key === "Tab") {
           const dialog = this.$el.querySelector('[role="dialog"]');
-          const controls = [...dialog.querySelectorAll('*')].filter(el => el.matches('button, input, select, [tabindex="0"]') && !el.disabled);
+          const controls = [...dialog.querySelectorAll('*')].filter(el => el.matches('button, input, textarea, select, [tabindex="0"]') && !el.disabled);
           const index = controls.indexOf(document.activeElement);
           if (!controls.length) { event.preventDefault(); dialog.focus(); }
           else if (event.shiftKey && index <= 0) { event.preventDefault(); controls.at(-1).focus(); }
@@ -1091,7 +1021,6 @@ export default {
         if (response.status === 401) {
           this.authenticated = false;
           this.clearSelection();
-          this.trashVideos = [];
           this.powerFailures = [];
         }
         throw new Error(data.error || "Request failed");
@@ -1135,7 +1064,6 @@ export default {
       await this.api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
       this.authenticated = false;
       this.clearSelection();
-      this.trashVideos = [];
       this.powerFailures = [];
       this.retryPayload = null;
       this.categorySummariesData = [];
@@ -1174,8 +1102,7 @@ export default {
     async loadLibrary() {
       this.loadingLibrary = true;
       try {
-        await Promise.all([this.loadCategories(), this.loadVideos()]);
-        if (this.isTrash) await this.loadTrash();
+        await Promise.all([this.loadCategories(), this.loadVideos(), this.loadCategoryMappings()]);
         this.syncRouteState();
       } finally {
         this.loadingLibrary = false;
@@ -1186,52 +1113,26 @@ export default {
       this.mediaFilter = this.normalizeMediaFilter(this.$route.query.type);
       this.sortMode = this.normalizeSortMode(this.$route.query.sort);
       this.viewMode = this.normalizeViewMode(this.$route.query.view);
-      if (this.isTrash || this.isTagView) {
-        this.viewMode = 'category';
-        this.selectedSubcategory = '';
-        const video = this.$route.name === 'tag-media' ? this.filteredVideos.find(item => item.id === Number(this.$route.params.id)) : null;
+      if (this.$route.params.subcategory) {
+        if (!this.mappingsLoaded) return;
+        const mapping = this.categoryMappings.find(item => item.parent === this.$route.params.category && item.subcategory === this.$route.params.subcategory);
+        this.$router.replace(mapping ? { name: this.$route.params.id ? 'media' : 'category', params: { category: mapping.category, ...(this.$route.params.id ? { id: this.$route.params.id } : {}) }, query: this.$route.query } : { name: 'categories', query: this.$route.query });
+        return;
+      }
+      if (this.isTagView) {
+        const video = ['tag-media', 'browse-media'].includes(this.$route.name) ? this.filteredVideos.find(item => item.id === Number(this.$route.params.id)) : null;
         this.selected = null;
         if (video) this.selectVideo(video, false);
         return;
       }
-      if (this.$route.name === "categories") {
-        this.selected = null;
-        this.selectedSubcategory = "";
-        this.categoryPassword = "";
-        this.categoryUnlockMessage = "";
-        this.viewMode = "category";
-        return;
-      }
-
-      const category = String(this.$route.params.category || "Uncategorized");
-      if (!this.categories.includes(category)) {
-        this.$router.push({ name: "categories" });
-        return;
-      }
+      if (this.$route.name === 'categories') { this.selected = null; this.categoryPassword = ''; this.categoryUnlockMessage = ''; this.viewMode = 'category'; return; }
+      const category = String(this.$route.params.category || 'Uncategorized');
+      if (!this.categories.includes(category)) { this.$router.push({ name: 'categories', query: this.$route.query }); return; }
       this.selectedCategory = category;
-      this.selectedSubcategory = String(this.$route.params.subcategory || "");
-      if (
-        this.selectedSubcategory &&
-        !this.selectedCategorySubcategories.some((subcategory) => subcategory.name === this.selectedSubcategory)
-      ) {
-        this.$router.push({ name: "category", params: { category } });
-        return;
-      }
-      this.categoryUnlockMessage = "";
-
-      if (this.$route.name !== "media" && this.$route.name !== "subcategory-media") {
-        this.selected = null;
-        return;
-      }
-
-      const id = Number(this.$route.params.id);
-      const video = this.videos.find((item) => item.id === id);
-      if (video) {
-        this.selectVideo(video, false);
-        this.ensureSelectedInFilteredList();
-      } else {
-        this.selected = null;
-      }
+      if (this.$route.name !== 'media') { this.selected = null; return; }
+      const video = this.filteredVideos.find(item => item.id === Number(this.$route.params.id));
+      if (video) this.selectVideo(video, false);
+      else { this.selected = null; const replacement = this.filteredVideos[0]; if (replacement) this.selectVideo(replacement); }
     },
     normalizeMediaFilter(value) {
       return value === "images" || value === "videos" ? value : "all";
@@ -1294,20 +1195,6 @@ export default {
     selectCategory(category) {
       this.$router.push({ name: "category", params: { category }, query: this.routeQueryWithMediaFilter() });
     },
-    selectSubcategory(subcategory) {
-      this.$router.push({
-        name: "subcategory",
-        params: { category: this.selectedCategory, subcategory },
-        query: this.routeQueryWithMediaFilter(),
-      });
-    },
-    clearSelectedSubcategory() {
-      this.$router.push({
-        name: "category",
-        params: { category: this.selectedCategory },
-        query: this.routeQueryWithMediaFilter(),
-      });
-    },
     async showCategories() {
       const category = this.selectedCategory;
       await this.$router.push({ name: "categories", query: this.routeQueryWithMediaFilter() });
@@ -1319,15 +1206,12 @@ export default {
     selectVideo(video, updateRoute = true) {
       this.selected = video;
       this.selectedCategory = video.category || "Uncategorized";
-      this.selectedSubcategory = video.subcategory || "";
       this.editTitle = video.title;
-      this.editTags = video.tags.join(", ");
+      this.editTags = video.tags.join("\n");
       this.editCategory = video.category || "Uncategorized";
-      this.editSubcategory = video.subcategory || "";
       this.editFavorited = Boolean(video.favorited);
       this.editWatchLater = Boolean(video.watch_later);
       this.customCategory = false;
-      this.customSubcategory = false;
       this.message = "";
       this.categoryUnlockMessage = "";
       if (updateRoute) {
@@ -1336,19 +1220,10 @@ export default {
     },
     pushMediaRoute(video) {
       if (this.isTagView) {
-        this.$router.push({ name: 'tag-media', params: { tag: this.$route.params.tag, id: video.id }, query: this.routeQueryWithMediaFilter() });
+        this.$router.push(this.$route.params.tag ? { name: 'tag-media', params: { tag: this.$route.params.tag, id: video.id }, query: this.routeQueryWithMediaFilter() } : { name: 'browse-media', params: { id: video.id }, query: this.routeQueryWithMediaFilter() });
         return;
       }
       const category = video.category || "Uncategorized";
-      const subcategory = video.subcategory || "";
-      if (subcategory) {
-        this.$router.push({
-          name: "subcategory-media",
-          params: { category, subcategory, id: video.id },
-          query: this.routeQueryWithMediaFilter(),
-        });
-        return;
-      }
       this.$router.push({
         name: "media",
         params: { category, id: video.id },
@@ -1365,15 +1240,7 @@ export default {
       }
       this.selected = null;
       if (this.isTagView) {
-        this.$router.replace({ name: 'tag', params: { tag: this.$route.params.tag }, query: this.routeQueryWithMediaFilter() });
-        return;
-      }
-      if (this.selectedSubcategory) {
-        this.$router.replace({
-          name: "subcategory",
-          params: { category: this.selectedCategory, subcategory: this.selectedSubcategory },
-          query: this.routeQueryWithMediaFilter(),
-        });
+        this.$router.replace(this.$route.params.tag ? { name: 'tag', params: { tag: this.$route.params.tag }, query: this.routeQueryWithMediaFilter() } : { name: 'browse', query: this.routeQueryWithMediaFilter() });
         return;
       }
       this.$router.replace({
@@ -1430,7 +1297,6 @@ export default {
           title: video.title,
           tags: video.tags,
           category: video.category || "Uncategorized",
-          subcategory: video.subcategory || "",
           favorited: video.favorited,
           watch_later: video.watch_later,
           ...patch,
@@ -1470,24 +1336,6 @@ export default {
       if (!this.categories.includes(this.editCategory)) {
         this.editCategory = this.categories[0] || "Uncategorized";
       }
-      if (this.editCategory === "Uncategorized") {
-        this.editSubcategory = "";
-        this.customSubcategory = false;
-      }
-    },
-    enableCustomSubcategory() {
-      if (this.editCategory === "Uncategorized") return;
-      this.customSubcategory = true;
-      this.$nextTick(() => {
-        const input = document.getElementById("subcategory");
-        if (input) input.focus();
-      });
-    },
-    useExistingSubcategory() {
-      this.customSubcategory = false;
-      if (!this.editorSubcategories.includes(this.editSubcategory)) {
-        this.editSubcategory = "";
-      }
     },
     async unlockSelectedCategory() {
       if (!this.selectedCategory || !this.isSelectedCategoryLocked) return;
@@ -1514,32 +1362,14 @@ export default {
     },
     async relockSelectedCategory() {
       if (!this.selectedCategory || !this.isSelectedCategoryLocked) return;
-      this.categoryUnlocking = true;
-      this.categoryUnlockMessage = "";
+      this.categoryUnlocking = true; this.categoryUnlockMessage = '';
       try {
-        await this.api("/api/categories/lock", {
-          method: "POST",
-          body: JSON.stringify({ category: this.selectedCategory }),
-        });
-        await this.loadLibrary();
-        this.selected = null;
-        if (this.$route.name === "media" || this.$route.name === "subcategory-media") {
-          if (this.selectedSubcategory) {
-            this.$router.push({
-              name: "subcategory",
-              params: { category: this.selectedCategory, subcategory: this.selectedSubcategory },
-            });
-          } else {
-            this.$router.push({ name: "category", params: { category: this.selectedCategory } });
-          }
-        }
-        this.showBanner("Category locked.");
-      } catch (error) {
-        this.categoryUnlockMessage = error.message;
-        this.showBanner(error.message, "error");
-      } finally {
-        this.categoryUnlocking = false;
-      }
+        await this.api('/api/categories/lock', { method: 'POST', body: JSON.stringify({ category: this.selectedCategory }) });
+        await this.loadLibrary(); this.selected = null;
+        if (this.$route.name === 'media') this.$router.push({ name: 'category', params: { category: this.selectedCategory }, query: this.$route.query });
+        this.showBanner('Category locked.');
+      } catch (error) { this.categoryUnlockMessage = error.message; this.showBanner(error.message, 'error'); }
+      finally { this.categoryUnlocking = false; }
     },
     requestRenameCategory(category) {
       if (category === "Uncategorized" || this.renamingCategory) return;
@@ -1582,46 +1412,6 @@ export default {
         this.renameCategoryName = "";
       }
     },
-    requestMoveCategory(category) {
-      if (category === "Uncategorized" || this.movingCategory) return;
-      this.pendingMoveCategory = category;
-      this.moveCategoryTarget = this.moveCategoryTargets[0] || "";
-    },
-    cancelMoveCategory() {
-      if (this.movingCategory) return;
-      this.pendingMoveCategory = null;
-      this.moveCategoryTarget = "";
-    },
-    async confirmMoveCategory() {
-      if (!this.pendingMoveCategory || !this.moveCategoryTarget) return;
-      const from = this.pendingMoveCategory;
-      const target = this.moveCategoryTarget;
-      this.movingCategory = true;
-      this.message = "";
-      try {
-        const result = await this.api("/api/categories/move", {
-          method: "POST",
-          body: JSON.stringify({ from, target }),
-        });
-        await this.loadLibrary();
-        this.selected = null;
-        this.selectedCategory = result.target;
-        this.selectedSubcategory = result.subcategory;
-        this.$router.push({
-          name: "subcategory",
-          params: { category: result.target, subcategory: result.subcategory },
-          query: this.routeQueryWithMediaFilter(),
-        });
-        this.showBanner("Category moved.");
-      } catch (error) {
-        this.message = error.message;
-        this.showBanner(error.message, "error");
-      } finally {
-        this.movingCategory = false;
-        this.pendingMoveCategory = null;
-        this.moveCategoryTarget = "";
-      }
-    },
     requestDeleteCategory(category) {
       if (category === "Uncategorized" || this.deletingCategory) return;
       this.pendingDeleteCategory = category;
@@ -1643,12 +1433,12 @@ export default {
           method: "POST",
           body: JSON.stringify({ category }),
         });
-        this.recordResults(result, this.videos.filter(video => video.category === category).map(video => video.id), { action: 'trash' });
+        this.recordResults(result, this.videos.filter(video => video.category === category).map(video => video.id), { action: 'delete' });
         await this.loadLibrary();
         this.selected = null;
         if (!this.powerFailures.length) this.selectedCategory = this.categories[0] || "Uncategorized";
         if (!this.powerFailures.length) this.$router.push({ name: "categories", query: this.routeQueryWithMediaFilter() });
-        this.showBanner(`Moved ${result.deleted || 0} items to trash. ${this.powerFailures.length} failed.${result.folder_retained ? ' Folder retained.' : ''}`, this.powerFailures.length ? 'error' : 'success');
+        this.showBanner(`Permanently deleted ${result.deleted || 0} items. ${this.powerFailures.length} failed.${result.folder_retained ? ' Folder retained.' : ''}`, this.powerFailures.length ? 'error' : 'success');
       } catch (error) {
         this.message = error.message;
         this.showBanner(error.message, "error");
@@ -1678,56 +1468,22 @@ export default {
       if (!this.selected) return;
       const currentCategory = this.selectedCategory;
       const currentList = [...this.filteredVideos];
-      const currentIndex = currentList.findIndex((video) => video.id === this.selected.id);
+      const currentIndex = currentList.findIndex(video => video.id === this.selected.id);
       const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
-      this.saving = true;
-      this.message = "";
+      this.saving = true; this.message = '';
       try {
-        const updated = await this.api(`/api/videos/${this.selected.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            title: this.editTitle,
-            tags: this.editTags,
-            category: this.editCategory,
-            subcategory: this.editSubcategory,
-            favorited: this.editFavorited,
-            watch_later: this.editWatchLater,
-          }),
-        });
-        const index = this.videos.findIndex((video) => video.id === updated.id);
+        const updated = await this.api(`/api/videos/${this.selected.id}`, { method: 'PATCH', body: JSON.stringify({ title: this.editTitle, tags: this.parseTagLines(this.editTags), category: this.editCategory, favorited: this.editFavorited, watch_later: this.editWatchLater }) });
+        const index = this.videos.findIndex(video => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
         await this.loadCategories();
-        const updatedCategory = updated.category || "Uncategorized";
-        const updatedSubcategory = updated.subcategory || "";
-        const movedOutOfCurrentCategory =
-          updatedCategory !== currentCategory ||
-          updatedSubcategory !== this.selectedSubcategory;
-        this.selectedCategory = currentCategory;
-        if (movedOutOfCurrentCategory) {
-          const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
-          if (next) {
-            this.selectVideo(next);
-          } else {
-            this.selected = null;
-            if (this.selectedSubcategory) {
-              this.$router.push({
-                name: "subcategory",
-                params: { category: currentCategory, subcategory: this.selectedSubcategory },
-              });
-            } else {
-              this.$router.push({ name: "category", params: { category: currentCategory } });
-            }
-          }
-        } else {
-          this.selectVideo(updated);
-        }
-        this.showBanner("Changes saved.");
-      } catch (error) {
-        this.message = error.message;
-        this.showBanner(error.message, "error");
-      } finally {
-        this.saving = false;
-      }
+        if ((updated.category || 'Uncategorized') !== currentCategory && !this.isTagView) {
+          const next = fallback ? this.videos.find(video => video.id === fallback.id) : null;
+          if (next) this.selectVideo(next);
+          else { this.selected = null; this.$router.push({ name: 'category', params: { category: currentCategory }, query: this.$route.query }); }
+        } else { this.selectVideo(updated); this.ensureSelectedInFilteredList(); }
+        this.showBanner('Changes saved.');
+      } catch (error) { this.message = error.message; this.showBanner(error.message, 'error'); }
+      finally { this.saving = false; }
     },
     requestDeleteSelected() {
       if (!this.selected || this.deleting) return;
@@ -1738,53 +1494,25 @@ export default {
       this.pendingDelete = null;
     },
     async confirmDelete() {
-      if (!this.pendingDelete) return;
-
-      this.deleting = true;
-      this.message = "";
+      if (!this.pendingDelete || this.deleting) return;
+      this.deleting = true; this.message = '';
       try {
-        const itemToDelete = this.pendingDelete;
+        const item = this.pendingDelete;
         const currentList = [...this.filteredVideos];
-        const currentIndex = currentList.findIndex((video) => video.id === itemToDelete.id);
-        const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
-
-        await this.api(`/api/videos/${itemToDelete.id}/delete`, {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        const deletedId = itemToDelete.id;
-        this.videos = this.videos.filter((video) => video.id !== deletedId);
+        const index = currentList.findIndex(video => video.id === item.id);
+        const fallback = currentList[index + 1] || currentList[index - 1] || null;
+        await this.api(`/api/videos/${item.id}/delete`, { method: 'POST', body: JSON.stringify({}) });
+        this.videos = this.videos.filter(video => video.id !== item.id);
         await this.loadCategories();
-        const next = fallback ? this.videos.find((video) => video.id === fallback.id) : null;
-        if (next) {
-          this.selectVideo(next);
-        } else if (this.selected && this.selected.id === deletedId) {
+        if (fallback) this.selectVideo(fallback);
+        else {
           this.selected = null;
-          if (this.categories.includes(this.selectedCategory)) {
-            if (this.selectedSubcategory) {
-              this.$router.push({
-                name: "subcategory",
-                params: { category: this.selectedCategory, subcategory: this.selectedSubcategory },
-              });
-            } else {
-              this.$router.push({ name: "category", params: { category: this.selectedCategory } });
-            }
-          } else {
-            this.$router.push({ name: "categories" });
-          }
+          if (this.isTagView) this.$router.push({ name: 'browse', query: { ...this.$route.query, tag: this.activeTags } });
+          else this.$router.push(this.categories.includes(this.selectedCategory) ? { name: 'category', params: { category: this.selectedCategory }, query: this.$route.query } : { name: 'categories', query: this.$route.query });
         }
-        this.showBanner("Moved to trash.");
-        if (!this.categories.includes(this.selectedCategory)) {
-          this.selectedCategory = this.categories[0] || "Uncategorized";
-          this.$router.push({ name: "categories" });
-        }
-      } catch (error) {
-        this.message = error.message;
-        this.showBanner(error.message, "error");
-      } finally {
-        this.deleting = false;
-        this.pendingDelete = null;
-      }
+        this.showBanner('Permanently deleted.');
+      } catch (error) { this.message = error.message; this.showBanner(error.message, 'error'); }
+      finally { this.deleting = false; this.pendingDelete = null; }
     },
     formatBytes(bytes) {
       if (!bytes) return "0 B";

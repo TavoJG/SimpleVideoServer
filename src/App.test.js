@@ -6,13 +6,14 @@ import { routes } from "./routes";
 
 const videos = [
   { id: 1, title: "At the beach", filename: "beach.jpg", relative_path: "Travel/beach.jpg", category: "Travel", subcategory: "", media_type: "image" },
-  { id: 2, title: "Mountain trail", filename: "trail.jpg", relative_path: "Travel/Hikes/trail.jpg", category: "Travel", subcategory: "Hikes", media_type: "image" },
+  { id: 2, title: "Mountain trail", filename: "trail.jpg", relative_path: "Hikes/trail.jpg", category: "Hikes", subcategory: "", media_type: "image" },
   { id: 3, title: "Family dinner", filename: "dinner.jpg", relative_path: "Private/dinner.jpg", category: "Private", subcategory: "", media_type: "image" },
   { id: 4, title: "Coast drive", filename: "drive.mp4", relative_path: "Travel/drive.mp4", category: "Travel", subcategory: "", media_type: "video" },
 ].map((video) => ({ ...video, tags: [], stream_url: `/media/${video.id}`, favorited: false, watch_later: false }));
 
 const categories = [
   { name: "Travel", count: 3, direct_count: 2, locked: false, unlocked: true, subcategories: [{ name: "Hikes", count: 1 }] },
+  { name: "Hikes", count: 1, direct_count: 1, locked: false, unlocked: true },
   { name: "Private", count: 1, direct_count: 1, locked: true, unlocked: false, subcategories: [] },
 ];
 
@@ -25,8 +26,8 @@ beforeEach(() => {
       "/api/auth/status": { enabled: false, authenticated: true },
       "/api/config": { default_video_root: "/library" },
       "/api/categories": categories,
+      "/api/category-migrations": [{ parent: "Travel", subcategory: "Hikes", category: "Hikes" }],
       "/api/videos": videos.filter((video) => video.category !== "Private"),
-      "/api/trash": [],
     };
     if (!(path in responses)) throw new Error(`Unexpected request: ${path}`);
     return { ok: true, json: async () => structuredClone(responses[path]) };
@@ -34,7 +35,7 @@ beforeEach(() => {
 });
 
 describe('Phase 3 power tools', () => {
-  it('groups tag case variants and hides unrelated folder controls on tags and trash routes', async () => {
+  it('groups tag case variants and hides unrelated folder controls on tag routes', async () => {
     const router = await openApp('/category/Travel');
     wrapper.vm.videos[0].tags = ['Summer'];
     wrapper.vm.videos[1].tags = ['summer'];
@@ -46,10 +47,7 @@ describe('Phase 3 power tools', () => {
     expect(wrapper.find('.subcategory-browser').exists()).toBe(false);
     expect(wrapper.find('.category-management').exists()).toBe(false);
     expect(wrapper.find('.back-button').text()).toBe('Back to tags');
-    await router.push('/trash');
-    await flushPromises();
-    expect(wrapper.find('.subcategory-browser').exists()).toBe(false);
-    expect(wrapper.text()).toContain('Trash is empty.');
+
   });
   it('selects ranges, selects all visible, clears on filters and keeps row controls separate', async () => {
     await openApp('/category/Travel');
@@ -79,13 +77,12 @@ describe('Phase 3 power tools', () => {
     wrapper.vm.selectAllVisible(true);
     wrapper.vm.openBulkDialog('move');
     wrapper.vm.powerDialog.targetCategory = 'Travel';
-    wrapper.vm.powerDialog.targetSubcategory = 'Hikes';
     await wrapper.vm.submitPowerDialog();
     await flushPromises();
-    expect(requests[0]).toEqual({ ids: [1, 4], action: 'move', category: 'Travel', subcategory: 'Hikes' });
+    expect(requests[0]).toEqual({ ids: [1, 4], action: 'move', category: 'Travel' });
     expect(wrapper.text()).toContain('File busy');
     await wrapper.vm.retryFailures();
-    expect(requests[1]).toEqual({ ids: [4], action: 'move', category: 'Travel', subcategory: 'Hikes' });
+    expect(requests[1]).toEqual({ ids: [4], action: 'move', category: 'Travel' });
     expect(wrapper.vm.powerFailures).toEqual([]);
   });
 
@@ -102,7 +99,7 @@ describe('Phase 3 power tools', () => {
     for (const mode of ['add', 'remove', 'replace']) {
       wrapper.vm.selectedIds = [1];
       wrapper.vm.openBulkDialog('tags');
-      Object.assign(wrapper.vm.powerDialog, { tags: 'travel, family, travel', tagMode: mode });
+      Object.assign(wrapper.vm.powerDialog, { tags: 'travel\nfamily\ntravel', tagMode: mode });
       await wrapper.vm.submitPowerDialog();
     }
     for (const action of ['favorited', 'watch_later']) {
@@ -134,54 +131,23 @@ describe('Phase 3 power tools', () => {
     expect(wrapper.find('.tag-browser').text()).toContain('travel');
   });
 
-  it('restores to original or chosen destination and confirms purge and empty trash', async () => {
-    await openApp('/trash');
+  it('confirms permanent bulk deletion and removes Trash navigation', async () => {
+    await openApp('/category/Travel');
+    expect(routes.some(route => route.name === 'trash')).toBe(false);
+    expect(wrapper.text()).not.toContain('Trash');
+    wrapper.vm.selectedIds = [1];
+    wrapper.vm.openBulkDialog('delete');
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').text()).toContain('cannot be undone');
     const original = wrapper.vm.api.bind(wrapper.vm);
-    const payloads = [];
+    let payload;
     vi.spyOn(wrapper.vm, 'api').mockImplementation((path, options) => {
-      if (!['/api/videos/bulk', '/api/trash/empty'].includes(path)) return original(path, options);
-      const payload = JSON.parse(options.body);
-      payloads.push({ path, payload });
+      if (path !== '/api/videos/bulk') return original(path, options);
+      payload = JSON.parse(options.body);
       return Promise.resolve({ results: [{ id: 1, success: true }] });
     });
-    for (const action of ['restore', 'restore', 'purge', 'empty']) {
-      wrapper.vm.trashVideos = [{ ...videos[0], trashed_at: '2026-10-08T12:00:00Z', trash_path: '.trash/beach.jpg' }];
-      await flushPromises();
-      wrapper.vm.selectedIds = [1];
-      wrapper.vm.openBulkDialog(action);
-      if (payloads.length === 1) Object.assign(wrapper.vm.powerDialog, { original: false, targetCategory: 'Travel', targetSubcategory: 'Hikes' });
-      await flushPromises();
-      if (['purge', 'empty'].includes(action)) expect(wrapper.find('[role="dialog"]').text()).toContain('cannot be undone');
-      await wrapper.vm.submitPowerDialog();
-    }
-    expect(payloads[0].payload).toEqual({ ids: [1], action: 'restore' });
-    expect(payloads[1].payload).toEqual({ ids: [1], action: 'restore', category: 'Travel', subcategory: 'Hikes' });
-    expect(payloads[2].payload.action).toBe('purge');
-    expect(payloads[3]).toEqual({ path: '/api/trash/empty', payload: {} });
-  });
-
-  it('renames, promotes and trashes subcategories using the folder contract', async () => {
-    const router = await openApp('/category/Travel/subcategory/Hikes');
-    const original = wrapper.vm.api.bind(wrapper.vm);
-    const requests = [];
-    vi.spyOn(wrapper.vm, 'api').mockImplementation((path, options) => {
-      if (!path.startsWith('/api/subcategories/')) return original(path, options);
-      requests.push({ path, payload: JSON.parse(options.body) });
-      return Promise.resolve({ results: [{ id: 2, success: false, error: 'Permission denied' }], folder_retained: true });
-    });
-    for (const action of ['rename', 'move', 'delete']) {
-      await router.push('/category/Travel/subcategory/Hikes');
-      await flushPromises();
-      wrapper.vm.openFolderDialog(action);
-      if (action === 'rename') wrapper.vm.powerDialog.name = 'Trails';
-      await wrapper.vm.submitPowerDialog();
-      await flushPromises();
-    }
-    expect(requests[0].payload).toEqual({ category: 'Travel', subcategory: 'Hikes', name: 'Trails' });
-    expect(requests[1].payload.target_subcategory).toBe('');
-    expect(requests[2].path).toBe('/api/subcategories/delete');
-    expect(wrapper.text()).toContain('Permission denied');
-    expect(wrapper.vm.retryPayload).toEqual({ action: 'trash', ids: [2] });
+    await wrapper.vm.submitPowerDialog();
+    expect(payload).toEqual({ ids: [1], action: 'delete' });
   });
 
   it('persists compact mode and keeps busy dialogs open on Escape', async () => {
@@ -190,7 +156,7 @@ describe('Phase 3 power tools', () => {
     expect(localStorage.getItem('video-library-compact')).toBe('true');
     expect(wrapper.classes()).toContain('compact-mode');
     wrapper.vm.selectedIds = [1];
-    wrapper.vm.openBulkDialog('trash');
+    wrapper.vm.openBulkDialog('delete');
     await flushPromises();
     await wrapper.setData({ powerBusy: true });
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
@@ -236,23 +202,23 @@ describe('Phase 3 power tools', () => {
     expect(wrapper.vm.selectedCategory).toBe('Travel');
     await wrapper.vm.retryFailures();
     await flushPromises();
-    expect(payloads).toEqual([{ ids: [4], action: 'trash' }]);
+    expect(payloads).toEqual([{ ids: [4], action: 'delete' }]);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it('allows a restore destination absent from categories and restores focus after cancellation', async () => {
-    await openApp('/trash');
-    await wrapper.setData({ trashVideos: [{ ...videos[0], category: 'Archived', trashed_at: '2026-10-08T12:00:00Z' }], selectedIds: [1] });
+  it('allows a move destination absent from categories and restores focus after cancellation', async () => {
+    await openApp('/category/Travel');
+    wrapper.vm.selectedIds = [1];
     const opener = wrapper.find('#search').element;
     opener.focus();
-    wrapper.vm.openBulkDialog('restore');
+    wrapper.vm.openBulkDialog('move');
     await flushPromises();
     expect(document.activeElement.closest('[role="dialog"]')).not.toBeNull();
     wrapper.vm.closePowerDialog();
     await flushPromises();
     expect(document.activeElement).toBe(opener);
-    wrapper.vm.openBulkDialog('restore');
-    Object.assign(wrapper.vm.powerDialog, { original: false, targetCategory: 'Archived' });
+    wrapper.vm.openBulkDialog('move');
+    wrapper.vm.powerDialog.targetCategory = 'Archived';
     const original = wrapper.vm.api.bind(wrapper.vm);
     let payload;
     vi.spyOn(wrapper.vm, 'api').mockImplementation((path, options) => {
@@ -262,6 +228,146 @@ describe('Phase 3 power tools', () => {
     });
     await wrapper.vm.submitPowerDialog();
     expect(payload.category).toBe('Archived');
+  });
+
+});
+
+describe('combined tag browsing', () => {
+  async function taggedApp(path) {
+    const router = await openApp(path);
+    wrapper.vm.videos[0].tags = ['Travel', 'Hiking'];
+    wrapper.vm.videos[1].tags = ['travel'];
+    wrapper.vm.videos[2].tags = ['travelogue', 'hiking'];
+    await flushPromises();
+    return router;
+  }
+  it('matches all or any exact case-insensitive tags across categories', async () => {
+    const router = await taggedApp('/browse?tag=TRAVEL&tag=hiking');
+    expect(wrapper.vm.tagMatch).toBe('all');
+    expect(wrapper.vm.filteredVideos.map(video => video.id)).toEqual([1]);
+    await wrapper.find('#tag-match').setValue('any');
+    await flushPromises();
+    expect(wrapper.vm.filteredVideos.map(video => video.id)).toEqual([1, 2, 4]);
+    expect(router.currentRoute.value.query.match).toBe('any');
+    expect(wrapper.vm.activeTags).toEqual(['TRAVEL', 'hiking']);
+  });
+  it('combines category and tags and clears selections on filter changes', async () => {
+    await taggedApp('/category/Travel?tag=travel&tag=hiking');
+    expect(wrapper.vm.filteredVideos.map(video => video.id)).toEqual([1]);
+    wrapper.vm.selectedIds = [1];
+    wrapper.vm.setTagFilters(['hiking'], 'all');
+    await flushPromises();
+    expect(wrapper.vm.filteredVideos.map(video => video.id)).toEqual([1, 4]);
+    expect(wrapper.vm.selectedIds).toEqual([]);
+  });
+  it('preserves filter URLs during playback and supports removal and clear all', async () => {
+    const router = await taggedApp('/browse?tag=travel&tag=hiking&match=any');
+    wrapper.vm.selectVideo(wrapper.vm.filteredVideos[0]);
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe('browse-media');
+    expect(router.currentRoute.value.query.tag).toEqual(['travel', 'hiking']);
+    wrapper.vm.removeTag('HIKING');
+    await flushPromises();
+    expect(wrapper.vm.activeTags).toEqual(['travel']);
+    wrapper.vm.setTagFilters([], 'all');
+    await flushPromises();
+    expect(wrapper.vm.activeTags).toEqual([]);
+    expect(wrapper.vm.filteredVideos).toHaveLength(3);
+  });
+  it('excludes locked media and tags and shows empty results', async () => {
+    await taggedApp('/browse?tag=secret');
+    wrapper.vm.videos.push({ ...videos[2], tags: ['secret'] });
+    await flushPromises();
+    expect(wrapper.vm.filteredVideos).toEqual([]);
+    expect(wrapper.vm.tagSummaries.some(tag => tag.name === 'secret')).toBe(false);
+    expect(wrapper.text()).toContain('No media matches these tags.');
+  });
+  it('preserves comma-containing tags through metadata editing', async () => {
+    await taggedApp('/category/Travel/media/1');
+    wrapper.vm.selectVideo({ ...wrapper.vm.videos[0], tags: ['Art, Music', 'Travel'] }, false);
+    expect(wrapper.vm.editTags).toBe('Art, Music\nTravel');
+    expect(wrapper.vm.parseTagLines(wrapper.vm.editTags)).toEqual(['Art, Music', 'Travel']);
+  });
+});
+
+describe('category tags', () => {
+  async function categoryTaggedApp(path = '/') {
+    const router = await openApp(path);
+    const values = structuredClone(categories);
+    values[0].tags = ['Travel', 'Outdoors'];
+    values[1].tags = ['travel'];
+    values[2].tags = ['Secret'];
+    await wrapper.setData({ categorySummariesData: values });
+    return router;
+  }
+  it('filters categories with all/any exact tags and category-name search', async () => {
+    const router = await categoryTaggedApp('/?category_tag=TRAVEL&category_tag=outdoors');
+    expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Travel']);
+    expect(wrapper.vm.categoryTagSummaries).toEqual([{ name: 'Outdoors', count: 1 }, { name: 'Travel', count: 2 }]);
+    await wrapper.find('#category-tag-match').setValue('any');
+    await flushPromises();
+    expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Travel', 'Hikes']);
+    expect(router.currentRoute.value.query.category_match).toBe('any');
+    await wrapper.find('#search').setValue('HI');
+    expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Hikes']);
+  });
+  it('keeps category filters separate from video tags and retains them on return', async () => {
+    const router = await categoryTaggedApp('/?category_tag=Travel');
+    wrapper.vm.selectCategory('Travel');
+    await flushPromises();
+    expect(wrapper.vm.filteredVideos.map(video => video.id)).toEqual([1, 4]);
+    expect(wrapper.vm.activeTags).toEqual([]);
+    await wrapper.vm.showCategories();
+    await flushPromises();
+    expect(router.currentRoute.value.query.category_tag).toBe('Travel');
+    expect(wrapper.vm.filteredCategorySummaries).toHaveLength(2);
+    wrapper.vm.removeCategoryTag('TRAVEL');
+    await flushPromises();
+    expect(wrapper.vm.activeCategoryTags).toEqual([]);
+  });
+  it('hides locked category tags and shows empty results', async () => {
+    await categoryTaggedApp('/?category_tag=Secret');
+    expect(wrapper.vm.categoryTagSummaries.some(tag => tag.name === 'Secret')).toBe(false);
+    expect(wrapper.find('.category-tag-badges').exists()).toBe(false);
+    expect(wrapper.text()).toContain('No categories match these filters.');
+    expect(wrapper.text()).not.toContain('Secret (1 categories)');
+  });
+  it('edits category tags without changing video tags and preserves commas', async () => {
+    await categoryTaggedApp('/category/Travel');
+    wrapper.vm.videos[0].tags = ['Video tag'];
+    const before = wrapper.vm.videos.map(video => [...video.tags]);
+    await wrapper.find('.category-tags-edit').trigger('click');
+    expect(wrapper.vm.categoryTagsDraft).toBe('Travel\nOutdoors');
+    expect(document.activeElement.id).toBe('category-tags-input');
+    await wrapper.find('#category-tags-input').setValue('Art, Music\nART, MUSIC\nNew');
+    const api = wrapper.vm.api.bind(wrapper.vm);
+    let payload;
+    vi.spyOn(wrapper.vm, 'api').mockImplementation((url, options) => {
+      if (url !== '/api/categories/tags') return api(url, options);
+      payload = JSON.parse(options.body);
+      return Promise.resolve({ category: 'Travel', tags: payload.tags });
+    });
+    await wrapper.vm.saveCategoryTags();
+    await flushPromises();
+    expect(payload).toEqual({ category: 'Travel', tags: ['Art, Music', 'New'] });
+    expect(wrapper.vm.selectedCategorySummary.tags).toEqual(['Art, Music', 'New']);
+    expect(wrapper.vm.videos.map(video => video.tags)).toEqual(before);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+  });
+  it('allows editing unlocked categories and retains failed edits', async () => {
+    await categoryTaggedApp('/category/Private');
+    expect(wrapper.find('.category-tags-edit').exists()).toBe(false);
+    wrapper.vm.categorySummariesData.find(category => category.name === 'Private').unlocked = true;
+    await flushPromises();
+    await wrapper.find('.category-tags-edit').trigger('click');
+    vi.spyOn(wrapper.vm, 'api').mockRejectedValueOnce(new Error('Permission denied'));
+    await wrapper.vm.saveCategoryTags();
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toBe('Permission denied');
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
   });
 });
 
@@ -320,10 +426,12 @@ describe("folder browsing", () => {
     await openApp("/category/Travel");
     const api = wrapper.vm.api.bind(wrapper.vm);
     const scan = vi.spyOn(wrapper.vm, "api").mockImplementation((path, options) => path === "/api/scan"
-      ? Promise.resolve({ found: 3, added: 1, updated: 2, missing: 1, last_scan_at: "2026-10-08T12:00:00Z" }) : api(path, options));
+      ? Promise.resolve({ found: 3, added: 1, updated: 2, missing: 1, removed_folders: 2, removed_categories: 1, cleanup_warnings: ['Folder busy'], last_scan_at: "2026-10-08T12:00:00Z" }) : api(path, options));
     await wrapper.find(".scan-form").trigger("submit");
     await flushPromises();
-    expect(wrapper.find('[role="status"]').text()).toContain("missing 1");
+    expect(wrapper.text()).toContain("missing 1");
+    expect(wrapper.text()).toContain("Removed 2 empty folders and 1 categories");
+    expect(wrapper.text()).toContain("Cleanup warning: Folder busy");
     scan.mockRejectedValueOnce(new Error("Folder unavailable"));
     await wrapper.find(".scan-form").trigger("submit");
     await flushPromises();
@@ -335,6 +443,22 @@ describe("folder browsing", () => {
     await wrapper.setData({ configuredRoot: "", scanResult: null });
     expect(wrapper.text()).toContain("VIDEO_ROOT is not configured");
     expect(wrapper.find(".scan-button").attributes("disabled")).toBeDefined();
+  });
+
+  it.each([
+    ['/category/Travel', [], 'categories'],
+  ])('returns to the parent view when scanning removes %s', async (path, remaining, destination) => {
+    const router = await openApp(path);
+    const api = wrapper.vm.api.bind(wrapper.vm);
+    vi.spyOn(wrapper.vm, 'api').mockImplementation((url, options) => {
+      if (url === '/api/scan') return Promise.resolve({ found: 0, removed_folders: 1, removed_categories: 1, cleanup_warnings: [], last_scan_at: '2026-10-14T12:00:00Z' });
+      if (url === '/api/categories') return Promise.resolve(remaining);
+      if (url === '/api/videos') return Promise.resolve([]);
+      return api(url, options);
+    });
+    await wrapper.vm.scanFolder();
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe(destination);
   });
 
   it("supports navigation, details and search shortcuts while ignoring typing", async () => {
@@ -382,7 +506,7 @@ describe("folder browsing", () => {
     expect(document.title).toBe("Travel - Video Library");
     await router.push("/category/Travel/subcategory/Hikes");
     await flushPromises();
-    expect(document.title).toBe("Travel / Hikes - Video Library");
+    expect(document.title).toBe("Hikes - Video Library");
     await wrapper.find(".video-row").trigger("click");
     await flushPromises();
     expect(document.title).toBe("Mountain trail - Video Library");
@@ -419,42 +543,19 @@ describe("folder browsing", () => {
     expect(wrapper.findAll("button").some((button) => button.text() === "Played")).toBe(false);
   });
 
-  it("shows subfolders separately from files in the parent category", async () => {
-    const router = await openApp();
-    await wrapper.find(".category-tile").trigger("click");
-    await flushPromises();
-
-    expect(router.currentRoute.value.name).toBe("category");
-    expect(wrapper.find(".folder-entry").text()).toContain("Hikes");
-    expect(wrapper.find(".video-list").text()).toContain("At the beach");
-    expect(wrapper.find(".video-list").text()).not.toContain("Mountain trail");
-    expect(wrapper.find(".selected-category-menu summary strong").text()).toContain("1 folders · 2 files");
+  it('shows flat categories without subcategory controls', async () => {
+    await openApp('/category/Travel');
+    expect(wrapper.find('.subcategory-browser').exists()).toBe(false);
+    expect(wrapper.find('#subcategory').exists()).toBe(false);
+    expect(wrapper.find('.video-list').text()).not.toContain('Mountain trail');
+    expect(wrapper.text()).not.toContain('Move into category');
   });
 
-  it("opens a subfolder, navigates its media, and returns to the parent", async () => {
-    const router = await openApp("/category/Travel");
-    await wrapper.find(".folder-entry").trigger("click");
-    await flushPromises();
-
-    expect(router.currentRoute.value.name).toBe("subcategory");
-    expect(wrapper.find(".video-list").text()).toContain("Mountain trail");
-    expect(wrapper.find(".video-list").text()).not.toContain("At the beach");
-
-    await wrapper.find(".video-row").trigger("click");
-    await flushPromises();
-    expect(router.currentRoute.value.name).toBe("subcategory-media");
-    expect(router.currentRoute.value.params.id).toBe("2");
-
-    await wrapper.find(".back-button").trigger("click");
-    await flushPromises();
-    expect(router.currentRoute.value.name).toBe("category");
-    expect(wrapper.find(".folder-entry").exists()).toBe(true);
-  });
-
-  it("keeps a locked category's files hidden", async () => {
-    await openApp("/category/Private");
-    expect(wrapper.find(".video-row").exists()).toBe(false);
-    expect(wrapper.text()).toContain("Unlock this category to view its media.");
+  it('redirects old subcategory media links using the migration mapping', async () => {
+    const router = await openApp('/category/Travel/subcategory/Hikes/media/2');
+    expect(router.currentRoute.value.name).toBe('media');
+    expect(router.currentRoute.value.params).toEqual({ category: 'Hikes', id: '2' });
+    expect(wrapper.vm.selected.id).toBe(2);
   });
 
   it("filters media by type and navigates only within the visible folder", async () => {

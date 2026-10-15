@@ -58,7 +58,7 @@ Install `ffmpeg` if you want generated thumbnails for videos:
 sudo apt install ffmpeg
 ```
 
-The scanner reads supported media files at the library root, inside categories, and inside their immediate subcategories. Categories and subcategories are single folder names; a third folder level is ignored. Uncategorized represents files at the library root and cannot have subcategories.
+The scanner reads supported media files at the library root and directly inside category folders. Categories are single folder names. Nested directories are preserved, excluded from indexing, and reported as scan warnings. Uncategorized represents files at the library root.
 
 In the viewer, videos automatically advance when playback ends. Previous and next controls navigate media within the current filtered view.
 
@@ -77,37 +77,58 @@ Example:
     beach.png             -> travel
   family/
     birthday.mp4          -> family
-  family/archive/old.mp4  -> family / archive
-  family/archive/older/clip.mp4 -> ignored
+  archive/old.mp4         -> archive
+  archive/older/clip.mp4  -> ignored (scan warning)
 ```
 
 You can also change a video's category from the web interface. Saving a new category physically moves the file into that folder under `VIDEO_ROOT`. Saving `Uncategorized` moves it back to the base folder. Category names must be single folder names, not paths. If a filename already exists in the target folder, the app appends `_1`, `_2`, and so on.
 
-Category names can be renamed from the category controls. This renames the backing folder and updates active indexed media in that category. Trashed items retain their original restoration location. `Uncategorized` cannot be renamed because it represents files stored directly in `VIDEO_ROOT`.
+Category names can be renamed from the category controls. This renames the backing folder and updates active indexed media in that category. `Uncategorized` cannot be renamed because it represents files stored directly in `VIDEO_ROOT`.
 
 ## Library Management
 
-Select media to move files, add/remove/replace tags, set Favorites or Watch Later, or move files to Trash. Select all applies to the current filtered list. Sorting preserves selection; changing the folder, view, search, or filters clears it. Bulk operations report individual failures and allow retrying failed items. Moves preserve metadata and choose a suffixed filename when the destination name is occupied.
+Select media to move files, add/remove/replace tags, set Favorites or Watch Later, or permanently delete files. Select all applies to the current filtered list. Sorting preserves selection; changing the folder, view, search, or filters clears it. Bulk operations report individual failures and allow retrying failed items. Moves preserve metadata and choose a suffixed filename when the destination name is occupied.
 
-Tags opens an exact, case-insensitive tag browser across unlocked media. Compact reduces list spacing and persists in this browser.
+Tags opens an exact, case-insensitive tag browser across unlocked media. Select multiple tags with Match all or Match any; filters also work inside a category and combine with search, media type, sorting, Favorites, and Watch Later. Tag selections persist in the URL using repeated `tag` parameters and `match=any` (the default is all). Enter one tag per line when editing; commas within a tag are preserved. Tags are stored as JSON arrays, with older comma-separated values converted automatically. Compact reduces list spacing and persists in this browser.
 
-Deleting media or a category now moves indexed files to `VIDEO_ROOT/.video-library-trash/<media-id>/`, preserving metadata and original locations. Trash has no automatic expiry. Restore recreates the original folders or uses a chosen destination; occupied filenames receive `_1`, `_2`, and so on. Permanent deletion and Empty Trash cannot be undone. Empty Trash only deletes items whose categories are currently accessible.
+Categories have their own editable tags, independent of video tags. The category grid supports category-name search and category-tag filters with Match all or Match any. Filters persist in `category_tag` and `category_match` URL parameters and remain selected when returning from a category. Category-tag counts count accessible categories; locked tags are hidden until unlocking.
 
-The trash directory is reserved and excluded from scans. Trash cannot be streamed or classified. Missing trash files remain listed with a restore error and can still be permanently removed from the index. Category locks continue to apply to trashed files, and zero-count categories remain available for unlocking and restoration.
+Open a category and select **Edit category tags** to enter one tag per line, including tags containing commas. This also works for Uncategorized and unlocked protected categories. Saving category tags does not change any video tags.
 
-Subcategories can be renamed, moved to another category, promoted to a top-level category, or trashed. Folder moves reject existing destinations and unsupported nesting. Renaming or moving a folder carries unindexed contents with it. Trashing a folder only affects indexed media and removes the folder only if it becomes empty; unindexed contents are retained and reported. Locked categories cannot be renamed or moved across category boundaries.
+Completed folder migration mappings seed each category with its former parent's name once, including surviving parent categories. Existing category tags are preserved. Seed completion is recorded transactionally, so edited or removed tags are not regenerated by startup, scans, renames, or migration reruns. Categories without a migration mapping start with no tags. Renaming a category preserves its tags; removing a category removes its metadata.
 
-File-changing operations and scans are serialized. Database failures after a file move trigger a move back to the original location; failures to restore the original path are reported and logged. Back up both the SQLite database and library files together, including the reserved trash directory.
+Deleting media permanently removes its file and database record. Category deletion permanently deletes indexed media only; unindexed contents are retained and reported. Confirmation dialogs explain that deletion cannot be undone. Authentication and category locks apply to all deletion actions.
 
-## Flatten Subfolders
+Categories match the folders on disk, including folders containing only non-media files with zero media counts. Every startup scan and Scan Library action removes truly empty folders bottom-up, including descendants below the media indexing depth. The library root, symlinks, hidden files, unsupported files, and nonempty folders are preserved. Missing media records keep their metadata but do not retain categories for absent folders. Uncategorized always represents the root.
 
-To move supported media files from subfolders into the base folder:
+Categories can be renamed, carrying unindexed contents with them. Media can be moved individually or in bulk to another flat category. Nested category destinations and subcategory controls have been removed. Locked categories cannot be renamed.
+
+File-changing operations and scans are serialized. Database failures after a file move trigger a move back to the original location. Permanent deletion uses a temporary staging file and durable recovery journal; interrupted deletions with files still staged are recovered at startup. Back up the SQLite database and library files together.
+
+On upgrade, existing Trash files are restored before startup scanning. Their IDs and metadata are preserved, original folders are recreated, and occupied filenames receive numbered suffixes. Migration commits each restored item separately and can resume after interruption. A missing or inaccessible legacy file stops startup with its ID and path; recover the file or fix its permissions and restart. After migration, the Trash columns and API actions are removed. Any residual unindexed contents in `.video-library-trash` stay on disk for manual recovery and remain excluded from scans.
+
+## Migrate Existing Categories
+
+Stop the server, then preview and apply using the same database and library root:
 
 ```bash
-./scripts/flatten_videos.sh /path/to/videos
+./video-server migrate-categories --dry-run --db /path/to/videos.sqlite3 --root /srv/videos
+./video-server migrate-categories --apply --db /path/to/videos.sqlite3 --root /srv/videos
 ```
 
-The script moves media files from subfolders only. If a filename already exists in the base folder, it appends `_1`, `_2`, and so on.
+`--db` and `--root` default to `VIDEO_DB` and `VIDEO_ROOT`. The command never starts HTTP serving. Preview opens the database read-only and changes nothing. Apply shares an exclusive database process lock with server startup; concurrent server or migration processes are rejected.
+
+`Travel/Japan/clip.mp4` becomes `Japan/clip.mp4` with the tag `Travel`. Direct media in `Travel` keeps its folder and also receives that tag. Existing tags and media IDs, filenames, metadata, and timestamps are retained. Missing records receive their planned new locations without creating folders. Supported unindexed media is included.
+
+Existing destination names are reserved case-insensitively. Conflicting subcategory names use `Parent - Subcategory`, then `_2`, `_3`, and so on. Whole folders move, preserving unindexed contents. Deeper directories remain intact and generate warnings; their media remains unindexed. Symlinks and inaccessible contents block migration before folder moves.
+
+The migration journals destinations before moving folders and commits each folder independently. Re-run `--apply` to resume after interruption or a resolved error. Successful steps are skipped, so rerunning never regenerates edited tags. Normal startup rejects an unmigrated hierarchy with instructions to run this command. Following migration, normal scans clean empty parent folders.
+
+Promoted categories inherit locks from their former parent through stored name aliases; no passwords are stored. Keep the original parent entries in `APP_LOCKED_CATEGORIES`. An explicit lock for a promoted category takes precedence. Original subcategory browser links redirect using the saved migration mapping.
+
+Legacy Trash restoration finishes before promotion. Missing legacy Trash files stop the migration with their ID and path.
+
+The older `scripts/flatten_videos.sh` moves files to the root without preserving indexed metadata; use the binary migration above to upgrade an existing library.
 
 ## Linux Mint AMD64 Build
 
@@ -150,21 +171,14 @@ The server uses Go's standard `net/http` router. If this grows beyond a small lo
 - `POST /api/auth/logout`
 - `GET /api/videos`
 - `GET /api/videos/<id>`
-- `POST /api/scan`
+- `POST /api/scan` returns the existing scan fields plus `removed_folders`, `removed_categories`, and `cleanup_warnings`.
 - `PATCH /api/videos/<id>` with `{ "title": "New title", "tags": ["tag one", "tag two"] }`
 - `POST /api/videos/<id>/delete`
-- `DELETE /api/videos/<id>` (also moves to Trash)
-- `POST /api/videos/bulk` with unique `ids` (maximum 1,000), `action`, and action parameters. Actions: `move` with explicit `category` and `subcategory`; `tags` with `tags` and `tag_mode` (`add`, `remove`, `replace`); `favorited` or `watch_later` with boolean `value`; `trash`; `restore` with optional destination; `purge` for trashed items only. Returns `results` containing `id`, `success`, and `error` or updated `video`.
-- `GET /api/trash`
-- `POST /api/trash/<id>/restore` with optional `category` and `subcategory`
-- `DELETE /api/trash/<id>` permanently deletes a trashed item
-- `POST /api/trash/empty` permanently deletes accessible trashed items and returns per-item results
+- `DELETE /api/videos/<id>` (permanently deletes the file and record)
+- `POST /api/videos/bulk` with unique `ids` (maximum 1,000), `action`, and action parameters. Actions: `move` with explicit `category`; `tags` with `tags` and `tag_mode` (`add`, `remove`, `replace`); `favorited` or `watch_later` with boolean `value`; `delete` for permanent deletion. Returns `results` containing `id`, `success`, and `error` or updated `video`.
 - `POST /api/categories/rename` with `{ "from": "old", "to": "new" }`
-- `POST /api/categories/move` with `{ "from": "source", "target": "destination" }` (flat categories only)
-- `POST /api/categories/delete` with `{ "category": "name" }` moves indexed media to Trash and returns `deleted`, `results`, and `folder_retained`
-- `POST /api/subcategories/rename` with `{ "category": "Travel", "subcategory": "Trips", "name": "Journeys" }`
-- `POST /api/subcategories/move` with `category`, `subcategory`, `target_category`, and `target_subcategory`; an empty target subcategory promotes the folder to a new top-level category
-- `POST /api/subcategories/delete` with `category` and `subcategory`; returns per-item results and `folder_retained`
+- `POST /api/categories/move` returns 410 because category nesting was removed.
+- `POST /api/categories/delete` with `{ "category": "name" }` permanently deletes indexed media and returns `deleted`, `results`, and `folder_retained`
 - `GET /media/<id>` serves the media file
 - `GET /thumb/<id>` serves an image thumbnail
 
@@ -172,7 +186,7 @@ Supported video extensions: `.mp4`, `.m4v`, `.mov`, `.webm`, `.mkv`, `.avi`, `.w
 
 Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.avif`.
 
-Compatibility: the existing media/category delete endpoints now preserve files in Trash rather than deleting them permanently. Clients needing permanent deletion must first trash an item, then use a Trash deletion endpoint.
+Compatibility: subcategory endpoints return 410, and obsolete subcategory request fields return 400. Media and folder deletion endpoints now permanently delete indexed files. Bulk clients must use `delete` instead of `trash`. The old Trash endpoints return 404; the `trash`, `restore`, and `purge` bulk actions return 400.
 ## Automatic Visual Tags and Categories
 
 Run `python3 classifier/classify_media.py` on the media server to tag and classify

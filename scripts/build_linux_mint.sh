@@ -56,7 +56,7 @@ from the copied folder:
 
 Set VIDEO_ROOT to your media folder and APP_PASSWORD to your chosen password
 before starting the service. The video-server user needs read and directory
-traversal access to your media, plus write access for moves and trash operations.
+traversal access to your media, plus write access for moves and permanent deletion.
 
   sudo systemctl daemon-reload
   sudo systemctl enable --now video-server

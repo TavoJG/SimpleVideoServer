@@ -24,7 +24,7 @@ func libraryFixture(t *testing.T) *server {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	for _, name := range []string{"Travel/clip.jpg", "Travel/Hikes/hike.jpg", "Private/secret.jpg"} {
+	for _, name := range []string{"Travel/clip.jpg", "Hikes/hike.jpg", "Private/secret.jpg"} {
 		path := filepath.Join(root, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -72,57 +72,6 @@ func bulkCall(t *testing.T, s *server, req bulkRequest) []bulkItemResult {
 	return result.Results
 }
 
-func TestTrashRestorePreservesMetadataAndScanExcludesTrash(t *testing.T) {
-	s := libraryFixture(t)
-	id := libraryID(t, s, "clip.jpg")
-	item, _ := s.queryVideo(id)
-	originalCreated := item.CreatedAt
-	yes := true
-	item, err := s.updateMedia(item, updateVideoRequest{Title: "Trip", Tags: []string{"Summer"}, Favorited: &yes, WatchLater: &yes})
-	if err != nil {
-		t.Fatal(err)
-	}
-	results := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "trash"})
-	if !results[0].Success {
-		t.Fatal(results)
-	}
-	trashed, _ := s.queryVideo(id)
-	if trashed.TrashedAt == "" || trashed.StreamURL != "" || trashed.ThumbnailURL != "" {
-		t.Fatalf("invalid trash: %+v", trashed)
-	}
-	if _, err := os.Stat(trashed.TrashPath); err != nil {
-		t.Fatal(err)
-	}
-	for _, route := range []string{"/media/", "/thumb/", "/api/videos/"} {
-		res := libraryCall(t, s, "GET", route+fmtID(id), nil)
-		if res.Code != 404 {
-			t.Fatalf("trashed access %s: %d", route, res.Code)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(s.defaultVideoRoot, "Travel", "clip.jpg"), []byte("replacement"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	scan, err := s.scanFolder(s.defaultVideoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scan.Found != 3 || scan.Missing != 0 {
-		t.Fatalf("scan includes trash: %+v", scan)
-	}
-	results = bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "restore"})
-	if !results[0].Success {
-		t.Fatal(results)
-	}
-	restored := results[0].Video
-	if restored.ID != id || restored.Title != "Trip" || !restored.Favorited || !restored.WatchLater || restored.CreatedAt != originalCreated || strings.Join(restored.Tags, ",") != "Summer" || restored.Filename != "clip_1.jpg" || restored.TrashedAt != "" {
-		t.Fatalf("restored metadata: %+v", restored)
-	}
-	if data, err := os.ReadFile(restored.Path); err != nil || string(data) != "Travel/clip.jpg" {
-		t.Fatalf("restored bytes %q %v", data, err)
-	}
-}
-func fmtID(id int64) string { return strconv.FormatInt(id, 10) }
-
 func TestBulkPartialSuccessAndTagModes(t *testing.T) {
 	s := libraryFixture(t)
 	id := libraryID(t, s, "clip.jpg")
@@ -142,188 +91,87 @@ func TestBulkPartialSuccessAndTagModes(t *testing.T) {
 			t.Fatalf("tags: %+v", r)
 		}
 	}
-	if res := libraryCall(t, s, "POST", "/api/videos/bulk", bulkRequest{IDs: []int64{id, id}, Action: "trash"}); res.Code != 400 {
+	if res := libraryCall(t, s, "POST", "/api/videos/bulk", bulkRequest{IDs: []int64{id, id}, Action: "delete"}); res.Code != 400 {
 		t.Fatal("duplicate IDs accepted")
 	}
-	cat, sub := "Private", ""
-	r := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "move", Category: &cat, Subcategory: &sub})
+	cat := "Private"
+	r := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "move", Category: &cat})
 	if r[0].Success {
 		t.Fatal("locked destination accepted")
 	}
 }
 
-func TestEmptyTrashPreservesLockedItemsAndMissingRestoreFails(t *testing.T) {
+func fmtID(id int64) string { return strconv.FormatInt(id, 10) }
+
+func TestPermanentDeletionRollbackLocksAndRemovedEndpoints(t *testing.T) {
 	s := libraryFixture(t)
 	id := libraryID(t, s, "clip.jpg")
-	locked := libraryID(t, s, "secret.jpg")
-	for _, vid := range []int64{id, locked} {
-		item, _ := s.queryVideo(vid)
-		if _, err := s.trashVideo(item); err != nil {
-			t.Fatal(err)
-		}
-	}
-	res := libraryCall(t, s, "GET", "/api/trash", nil)
-	var items []video
-	if err := json.Unmarshal(res.Body.Bytes(), &items); err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].ID != id {
-		t.Fatalf("locked trash leaked: %+v", items)
-	}
 	item, _ := s.queryVideo(id)
-	if err := os.Remove(item.TrashPath); err != nil {
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_delete BEFORE DELETE ON videos BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	r := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "restore"})
-	if r[0].Success || !strings.Contains(r[0].Error, "missing") {
-		t.Fatalf("missing restore: %+v", r)
+	if err := s.permanentDelete(item); err == nil {
+		t.Fatal("expected deletion failure")
 	}
-	res = libraryCall(t, s, "POST", "/api/trash/empty", nil)
-	if res.Code != 200 {
-		t.Fatal(res.Body.String())
+	if data, err := os.ReadFile(item.Path); err != nil || string(data) != "Travel/clip.jpg" {
+		t.Fatalf("file lost: %q %v", data, err)
+	}
+	if _, err := s.queryVideo(id); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM pending_deletions").Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("journal rollback %d %v", pending, err)
+	}
+	s.db.Exec("DROP TRIGGER reject_delete")
+	locked := libraryID(t, s, "secret.jpg")
+	results := bulkCall(t, s, bulkRequest{IDs: []int64{id, locked, 99999}, Action: "delete"})
+	if !results[0].Success || results[0].Video != nil || results[1].Success || results[2].Success {
+		t.Fatalf("results: %+v", results)
 	}
 	if _, err := s.queryVideo(id); err != sql.ErrNoRows {
-		t.Fatal("accessible trash remains")
+		t.Fatal("record retained", err)
 	}
-	if item, err := s.queryVideo(locked); err != nil || item.TrashedAt == "" {
-		t.Fatal("locked trash removed")
+	if _, err := os.Stat(item.Path); !os.IsNotExist(err) {
+		t.Fatal("file retained", err)
 	}
-}
-
-func TestCategoryTrashPreservesUnindexedContentsAndLocks(t *testing.T) {
-	s := libraryFixture(t)
-	path := filepath.Join(s.defaultVideoRoot, "Travel", "notes.txt")
-	if err := os.WriteFile(path, []byte("keep"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res := libraryCall(t, s, "POST", "/api/categories/delete", map[string]string{"category": "Travel"})
-	if res.Code != 200 || !strings.Contains(res.Body.String(), `"folder_retained":true`) {
-		t.Fatalf("folder response: %s", res.Body.String())
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
-		t.Fatal("unindexed content removed")
-	}
-	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM categories WHERE name='Travel'").Scan(&count); err != nil || count != 1 {
-		t.Fatal("restore category lost")
-	}
-	categories, err := s.queryCategories()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, cat := range categories {
-		if cat.Name == "Travel" && cat.Count != 0 {
-			t.Fatal("trashed media counted in active category")
-		}
-	}
-}
-
-func TestMediaMoveAndTrashRollbackOnDatabaseFailure(t *testing.T) {
-	s := libraryFixture(t)
-	id := libraryID(t, s, "clip.jpg")
-	item, _ := s.queryVideo(id)
-	if _, err := s.db.Exec(`CREATE TRIGGER reject_update BEFORE UPDATE ON videos BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	cat, sub := "Other", ""
-	_, err := s.updateMedia(item, updateVideoRequest{Title: item.Title, Tags: item.Tags, Category: &cat, Subcategory: &sub})
-	if err == nil {
-		t.Fatal("move did not fail")
-	}
-	if _, err := os.Stat(item.Path); err != nil {
-		t.Fatal("move rollback lost original")
-	}
-	if _, err := s.trashVideo(item); err == nil {
-		t.Fatal("trash did not fail")
-	}
-	if _, err := os.Stat(item.Path); err != nil {
-		t.Fatal("trash rollback lost original")
-	}
-	if _, err := s.db.Exec("DROP TRIGGER reject_update"); err != nil {
-		t.Fatal(err)
-	}
-	trashed, err := s.trashVideo(item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`CREATE TRIGGER reject_restore BEFORE UPDATE ON videos BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.restoreVideo(trashed, nil, nil); err == nil {
-		t.Fatal("restore did not fail")
-	}
-	if _, err := os.Stat(trashed.TrashPath); err != nil {
-		t.Fatal("restore rollback lost trash file")
-	}
-}
-
-func TestTrashColumnsMigrateExistingDatabase(t *testing.T) {
-	s := libraryFixture(t)
-	if _, err := s.db.Exec("ALTER TABLE videos DROP COLUMN trashed_at"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec("ALTER TABLE videos DROP COLUMN trash_path"); err != nil {
-		t.Fatal(err)
-	}
-	if err := initDB(s.db); err != nil {
-		t.Fatal(err)
-	}
-	if err := initDB(s.db); err != nil {
-		t.Fatal(err)
-	}
-	item, err := s.queryVideo(libraryID(t, s, "clip.jpg"))
-	if err != nil || item.TrashedAt != "" {
-		t.Fatalf("migration %+v %v", item, err)
-	}
-}
-
-func TestTrashRequiresAuthentication(t *testing.T) {
-	s := libraryFixture(t)
-	s.password = "password"
-	for _, path := range []string{"/api/trash", "/api/videos/bulk", "/api/trash/empty"} {
+	for _, path := range []string{"/api/trash", "/api/trash/empty", "/api/trash/1/restore"} {
 		method := http.MethodPost
 		if path == "/api/trash" {
 			method = http.MethodGet
 		}
-		if res := libraryCall(t, s, method, path, nil); res.Code != 401 {
-			t.Fatalf("unauthenticated %s: %d", path, res.Code)
+		if res := libraryCall(t, s, method, path, nil); res.Code != 404 {
+			t.Fatalf("removed route %s: %d", path, res.Code)
 		}
+	}
+	for _, action := range []string{"trash", "restore", "purge"} {
+		if res := libraryCall(t, s, "POST", "/api/videos/bulk", bulkRequest{IDs: []int64{locked}, Action: action}); res.Code != 400 {
+			t.Fatalf("old action %s: %d", action, res.Code)
+		}
+	}
+	s.password = "password"
+	if res := libraryCall(t, s, "POST", "/api/videos/bulk", bulkRequest{IDs: []int64{locked}, Action: "delete"}); res.Code != 401 {
+		t.Fatal("unauthenticated deletion allowed")
 	}
 }
 
-func TestPermanentDeleteRollbackAndExplicitRestoreDestination(t *testing.T) {
+func TestDeletionRejectsSymlinksAndDeletesMissingRecord(t *testing.T) {
 	s := libraryFixture(t)
-	id := libraryID(t, s, "clip.jpg")
-	item, _ := s.queryVideo(id)
-	trashed, err := s.trashVideo(item)
-	if err != nil {
+	item, _ := s.queryVideo(libraryID(t, s, "clip.jpg"))
+	outside := filepath.Join(t.TempDir(), "outside.jpg")
+	os.WriteFile(outside, []byte("keep"), 0600)
+	os.Remove(item.Path)
+	if err := os.Symlink(outside, item.Path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`CREATE TRIGGER reject_delete BEFORE DELETE ON videos BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
+	if err := s.permanentDelete(item); err == nil {
+		t.Fatal("symlink deleted")
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
+		t.Fatal("external file changed")
+	}
+	os.Remove(item.Path)
+	if err := s.permanentDelete(item); err != nil {
 		t.Fatal(err)
-	}
-	if err := s.purgeVideo(trashed); err == nil {
-		t.Fatal("purge did not fail")
-	}
-	if _, err := os.Stat(trashed.TrashPath); err != nil {
-		t.Fatal("purge rollback lost trash file")
-	}
-	if _, err := s.queryVideo(id); err != nil {
-		t.Fatal("purge rollback lost record")
-	}
-	if _, err := s.db.Exec("DROP TRIGGER reject_delete"); err != nil {
-		t.Fatal(err)
-	}
-	cat, sub := "Archive", "Trips"
-	res := libraryCall(t, s, "POST", "/api/trash/"+fmtID(id)+"/restore", map[string]string{"category": cat, "subcategory": sub})
-	if res.Code != 200 {
-		t.Fatal(res.Body.String())
-	}
-	restored, _ := s.queryVideo(id)
-	if restored.Category != cat || restored.Subcategory != sub || restored.RelativePath != filepath.Join(cat, sub, item.Filename) {
-		t.Fatalf("wrong destination: %+v", restored)
-	}
-	if r := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "purge"}); r[0].Success {
-		t.Fatal("purged active media")
 	}
 }

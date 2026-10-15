@@ -118,10 +118,10 @@ View service errors with `journalctl -u ollama -n 100 --no-pager`.
 Supply UTF-8 JSON arrays. The model can select only these exact values:
 
 ```json
-["Nature/Forests", "Nature/Beaches", "People", "Uncategorized"]
+["Forests", "Beaches", "People", "Uncategorized"]
 ```
 
-Category labels are `Category` or `Category/Subcategory`. `Uncategorized` means
+Category labels are single folder names; nested category paths are rejected. `Uncategorized` means
 the media root. New listed folders are created when a file is assigned there.
 The model never invents categories. An ambiguous category result is `null`,
 which leaves the current location unchanged.
@@ -165,10 +165,10 @@ python3 classifier/classify_media.py \
 ```
 
 Omit `--categories` for tagging only; omit `--tags` for classification only.
-`--source-category Nature` restricts input to that parent and its subcategories.
+`--source-category Forests` restricts input to that flat category.
 Repeat `--id 123` to process specific IDs or retry failed items. `--limit N`
 processes the first N active items by ID. Each run re-evaluates its selected media.
-Missing and trashed media are excluded. Stale indexed metadata is rejected.
+Missing media is excluded. Stale indexed metadata is rejected.
 
 Images are resized to fit 768 by 768. Videos use up to eight evenly sampled
 frames excluding the beginning and end; short clips use fewer frames. `--frames`
@@ -198,3 +198,5 @@ symlinks are rejected. Library IDs, titles, favorites and watch-later flags are
 preserved.
 
 Run tests with `python3 -m unittest discover -s classifier -p 'test_*.py'`.
+
+Tags are read and written as JSON arrays in SQLite, preserving comma-containing tags. Older comma-separated values remain readable.
