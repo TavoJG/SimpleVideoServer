@@ -576,3 +576,119 @@ describe("folder browsing", () => {
     expect(wrapper.findAll(".video-row")).toHaveLength(1);
   });
 });
+
+
+describe('shuffle playback', () => {
+  async function prepare() {
+    const router = await openApp('/category/Travel/media/4');
+    wrapper.vm.videos.push(...[5, 6].map(id => ({ ...structuredClone(videos[3]), id, title: `Clip ${id}`, stream_url: `/media/${id}` })));
+    await flushPromises();
+    await wrapper.find('.shuffle-toggle').trigger('click');
+    await flushPromises();
+    return router;
+  }
+  it('keeps the current video, skips images, and shares keyboard and ended navigation', async () => {
+    await prepare();
+    expect(wrapper.vm.selected.id).toBe(4);
+    expect(wrapper.find('.shuffle-toggle').attributes('aria-pressed')).toBe('true');
+    expect(localStorage.getItem('video-library-shuffle')).toBe('true');
+    await wrapper.find('video').trigger('ended');
+    await flushPromises();
+    const second = wrapper.vm.selected.id;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+    await flushPromises();
+    expect(wrapper.vm.selected.id).toBe(4);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    await flushPromises();
+    expect(wrapper.vm.selected.id).toBe(second);
+    await wrapper.find('.carousel-control.next').trigger('click');
+    await flushPromises();
+    expect(new Set([4, second, wrapper.vm.selected.id]).size).toBe(3);
+  });
+  it('preserves the queue on sorting and resets it on selection, membership, and filters', async () => {
+    await prepare();
+    const queue = [...wrapper.vm.shuffleState.queue];
+    await wrapper.find('#sort-mode').setValue('title');
+    await flushPromises();
+    expect(wrapper.vm.shuffleState.queue).toEqual(queue);
+    wrapper.vm.selectVideo(wrapper.vm.videos.find(video => video.id === 5));
+    await flushPromises();
+    expect(wrapper.vm.shuffleState.history).toEqual([5]);
+    wrapper.vm.videos = wrapper.vm.videos.filter(video => video.id !== 6);
+    await flushPromises();
+    expect(wrapper.vm.shuffleState.queue).not.toContain(6);
+    await wrapper.find('#search').setValue('Clip 5');
+    await flushPromises();
+    expect(wrapper.vm.hasNextMedia).toBe(false);
+    await wrapper.find('video').trigger('ended');
+    await flushPromises();
+    expect(wrapper.vm.selected.id).toBe(5);
+    await wrapper.find('.shuffle-toggle').trigger('click');
+    expect(wrapper.vm.shuffleEnabled).toBe(false);
+  });
+  it('respects tags, favorites, and locked categories in the video pool', async () => {
+    const router = await prepare();
+    wrapper.vm.videos.push({ ...structuredClone(videos[3]), id: 9, category: 'Private' });
+    wrapper.vm.videos.find(video => video.id === 5).tags = ['Summer'];
+    wrapper.vm.videos.find(video => video.id === 5).favorited = true;
+    await router.push('/browse?tag=Summer&view=favorites');
+    await flushPromises();
+    expect(wrapper.vm.shuffleVideoIds).toEqual([5]);
+    await router.push('/browse');
+    await flushPromises();
+    expect(wrapper.vm.shuffleVideoIds).not.toContain(9);
+    wrapper.vm.videos = wrapper.vm.videos.filter(video => video.id !== 5);
+    await flushPromises();
+    expect(wrapper.vm.shuffleState.queue).not.toContain(5);
+    expect(wrapper.vm.shuffleState.history).not.toContain(5);
+  });
+  it('starts from an image, disables empty pools, and restores the preference', async () => {
+    localStorage.setItem('video-library-shuffle', 'true');
+    await openApp('/category/Travel/media/4');
+    expect(wrapper.vm.shuffleEnabled).toBe(true);
+    expect(wrapper.vm.shuffleState.history).toEqual([4]);
+    await wrapper.find('.shuffle-toggle').trigger('click');
+    wrapper.vm.selectVideo(wrapper.vm.videos.find(video => video.id === 1));
+    await flushPromises();
+    await wrapper.find('.shuffle-toggle').trigger('click');
+    await flushPromises();
+    expect(wrapper.vm.selected.id).toBe(4);
+    await wrapper.find('#media-filter').setValue('images');
+    await flushPromises();
+    expect(wrapper.find('.shuffle-toggle').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('No videos match this view.');
+  });
+});
+
+
+describe('main-page shuffle', () => {
+  it('starts across unlocked categories and clears previous filters', async () => {
+    const router = await openApp('/?type=images&tag=absent&view=favorites');
+    wrapper.vm.videos.push(
+      { ...structuredClone(videos[3]), id: 5, category: 'Hikes', stream_url: '/media/5' },
+      { ...structuredClone(videos[3]), id: 9, category: 'Private', stream_url: '/media/9' },
+    );
+    await wrapper.find('#search').setValue('unmatched search');
+    await wrapper.find('.shuffle-all').trigger('click');
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe('browse-media');
+    expect(router.currentRoute.value.query).toEqual({ type: 'videos' });
+    expect(wrapper.vm.query).toBe('');
+    expect(wrapper.vm.shuffleEnabled).toBe(true);
+    expect(localStorage.getItem('video-library-shuffle')).toBe('true');
+    expect(wrapper.vm.shuffleVideoIds.sort()).toEqual([4, 5]);
+    const first = wrapper.vm.selected.id;
+    await wrapper.find('video').trigger('ended');
+    await flushPromises();
+    expect(wrapper.vm.selected.id).not.toBe(first);
+    expect(router.currentRoute.value.name).toBe('browse-media');
+    expect(wrapper.vm.shuffleState.history).toHaveLength(2);
+  });
+  it('disables main-page playback when only images or locked videos exist', async () => {
+    await openApp('/');
+    wrapper.vm.videos = [structuredClone(videos[0]), { ...structuredClone(videos[3]), category: 'Private' }];
+    await flushPromises();
+    expect(wrapper.find('.shuffle-all').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('No unlocked videos available.');
+  });
+});
