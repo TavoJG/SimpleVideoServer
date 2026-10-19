@@ -136,6 +136,35 @@ class CategoryTaggerTests(unittest.TestCase):
         self.assertEqual(cli.sample_media(list(range(10)), 3), [0, 4, 9])
         self.assertEqual(cli.sample_media(list(range(10)), 0), list(range(10)))
 
+    def test_special_category_is_excluded_from_analysis_and_limit(self):
+        self.db.execute("INSERT INTO categories VALUES(0,'Uncategorized','[\"Keep root\"]',NULL)")
+        self.db.execute("INSERT INTO videos SELECT 2,'unused-root-path',root,'Uncategorized',media_type,0,mtime,size_bytes FROM videos WHERE id=1")
+        self.db.commit()
+        code, records = self.run_cli(["--apply", "--limit", "1"])
+        self.assertEqual(code, 0)
+        self.assertEqual([record["category"] for record in records], ["Nature"])
+        code, records = self.run_cli(["--apply", "--source-category", "UNCATEGORIZED"], [])
+        self.assertEqual((code, records), (0, []))
+        self.assertEqual(self.db.execute("SELECT tags FROM categories WHERE id=0").fetchone()[0], '["Keep root"]')
+
+    def test_special_category_in_old_report_is_skipped(self):
+        path = self.saved_preview()
+        record = json.loads(path.read_text())
+        self.db.execute("UPDATE categories SET name='Uncategorized' WHERE id=1")
+        self.db.commit()
+        record["category"] = "Uncategorized"
+        for entry in record["evidence"]:
+            entry.pop("snapshot")
+            entry.pop("identity")
+        path.write_text(json.dumps(record) + "\n")
+        code, progress, raw = self.replay(path)
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(raw)["applied"])
+        self.assertIn("special category", progress)
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+        with self.assertRaises(ValueError):
+            cli.apply_result(self.db, {"id": 1, "name": "uncategorized"}, [], ["trees"])
+
     def saved_preview(self, legacy=False):
         _, records = self.run_cli(["--source-category", "Nature"])
         if legacy:

@@ -117,6 +117,8 @@ def merge_tags(existing, suggested):
 
 
 def apply_result(db, category, evidence, suggested):
+    if category["name"].strip().casefold() == "uncategorized":
+        raise ValueError("Uncategorized is a special category and is excluded")
     db.execute("BEGIN IMMEDIATE")
     try:
         current = db.execute("SELECT id,name,tags FROM categories WHERE id=?", (category["id"],)).fetchone()
@@ -196,7 +198,10 @@ def apply_saved_report(db, records, output, progress):
         name = saved["category"]
         progress(f"[{index}/{len(records)}] Applying saved suggestions for {name!r}")
         record = {**saved, "applied": False, "added_tags": [], "errors": []}
-        if saved.get("errors") or saved.get("skipped"):
+        if name.strip().casefold() == "uncategorized":
+            record["skipped"] = "Uncategorized is a special category"
+            progress(f"  Skipped: {record['skipped']}")
+        elif saved.get("errors") or saved.get("skipped"):
             record["skipped"] = "Preview had errors or no usable media"
             record["errors"] = saved.get("errors", [])
             failures += bool(record["errors"])
@@ -271,9 +276,9 @@ def main(argv=None):
             db.row_factory = sqlite3.Row
             if "tags" not in {column[1] for column in db.execute("PRAGMA table_info(categories)")}:
                 raise ValueError("Database lacks category tags; start the updated web app once to migrate it")
-            query, params = "SELECT id,name,tags FROM categories", []
+            query, params = "SELECT id,name,tags FROM categories WHERE name <> ? COLLATE NOCASE", ["Uncategorized"]
             if args.source_category:
-                query += " WHERE name COLLATE NOCASE IN (" + ",".join("?" for _ in args.source_category) + ")"
+                query += " AND name COLLATE NOCASE IN (" + ",".join("?" for _ in args.source_category) + ")"
                 params.extend(args.source_category)
             query += " ORDER BY id"
             if args.limit:
@@ -281,7 +286,7 @@ def main(argv=None):
             categories = db.execute(query, params).fetchall()
             if args.source_category and not args.limit:
                 found = {category["name"].casefold() for category in categories}
-                if any(name.casefold() not in found for name in args.source_category):
+                if any(name.casefold() != "uncategorized" and name.casefold() not in found for name in args.source_category):
                     raise ValueError("Requested source category not found")
             if args.report:
                 protected = {db_path, Path(str(db_path) + ".classifier.lock"), Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")}

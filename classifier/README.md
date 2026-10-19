@@ -224,8 +224,12 @@ Do not redirect output to the input preview file: the shell truncates redirected
 files before the script starts. Prefer separate `--report` paths, which the
 script checks before opening.
 
+`Uncategorized` is a special category and is always excluded from analysis and
+saved-report application, even when explicitly selected or present in an older
+report. Its existing tags remain untouched.
+
 `--tags` is required for inference. Repeat `--source-category Forests` to target specific
-categories, including `Uncategorized` for the root. `--limit N` limits the number
+managed categories. `--limit N` limits the number
 of categories, ordered by category ID. By default, up to eight media items per
 category are sampled evenly across media IDs. Use `--media-limit N` to change
 that count or `--media-limit 0` to inspect all indexed media in each category.
