@@ -208,6 +208,13 @@ summary. Each completed category prints its full proposed tag list, for example
 `[]`. Saved-report application also prints progress and proposed tags for each
 category; its applied/skipped/failed message identifies whether they were saved.
 
+Ollama requests use [HTTP streaming](https://docs.ollama.com/api/streaming).
+While the model loads or processes images before its first response chunk, the
+script prints elapsed-time updates every 10 seconds. Once chunks arrive, it
+reports stream activity and the number of received characters. It assembles the
+complete JSON and validates the allowed tags before accepting any suggestions;
+partial, interrupted or malformed responses never supply tags.
+
 Use `--report /path/to/results.jsonl` to save valid JSONL separately from the
 progress text. Without `--report`, JSONL results go to stderr. `--quiet` disables
 progress and restores JSONL on stdout when no report file is specified, for
@@ -244,9 +251,50 @@ Category assignment remains a manual app operation.
 
 Images are resized to fit 768 by 768. Videos use up to eight evenly sampled
 frames excluding the beginning and end; short clips use fewer frames. `--frames`
-accepts 1 through 8. `--timeout` defaults to 180 seconds for each extraction or
-inference operation. Each sampled media item uses one visual inference.
+accepts 1 through 8. Each sampled media item uses one visual inference.
 Filenames and existing tags are not sent to the model.
+
+### Streaming Timeouts
+
+The defaults retain eight media samples and eight frames, with a 300-second
+overall request limit, matching the tested `--media-limit 8 --frames 8 --timeout 300`
+configuration. Each media item has its own request and deadline.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--timeout` | 300 seconds | Overall Ollama request deadline; also the timeout for each FFmpeg/FFprobe operation |
+| `--connect-timeout` | 10 seconds | Socket connection and TLS setup timeout |
+| `--read-timeout` | Same as `--timeout` | Maximum idle socket-read wait, including headers and the first chunk |
+| `--progress-interval` | 10 seconds | Interval between stdout waiting/streaming updates |
+
+Streaming does not accelerate inference. Model loading and image encoding can
+still take time before the first chunk. Keep the idle-read timeout generous for
+that phase. Incoming data allows reads to continue, but does not extend the
+overall deadline. On deadline expiry, the client shuts down the connection and
+reports an error; cancellation of GPU work depends on the Ollama server. DNS
+resolution uses the operating system resolver and can exceed socket timeouts.
+
+For a slower model, allow ten minutes overall while retaining a five-minute
+idle-read limit:
+
+```sh
+python3 classifier/classify_media.py \
+  --db /srv/video_server/videos.sqlite3 \
+  --tags /srv/video_server/tags.json --model gemma3:4b \
+  --ollama-url http://GPU_HOST:11434 \
+  --media-limit 8 --frames 8 --timeout 600 --read-timeout 300 \
+  --progress-interval 10 --report /tmp/category-tags-preview.jsonl
+```
+
+Timeout errors distinguish connection, idle-read, and overall-deadline failures.
+All durations must be positive. `--quiet` also suppresses streaming activity
+updates. `--apply-report` does not open a network connection, so it needs no
+streaming or timeout changes.
+
+The client connects directly to `--ollama-url` using HTTP or verified HTTPS,
+including URLs with a reverse-proxy path prefix. Forward-proxy environment
+variables such as `HTTP_PROXY` are not used; configure a reverse proxy or VPN
+when needed.
 
 `OLLAMA_URL` and `CLASSIFIER_MODEL` provide defaults for their flags. If an
 Ollama reverse proxy requires bearer authentication, set `OLLAMA_TOKEN`. Use a

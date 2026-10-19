@@ -124,10 +124,10 @@ class CategoryTaggerTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
 
     def test_inference_is_visual_tags_only(self):
-        envelope = {"message": {"content": '{"tags":["trees"],"reason":"Trees"}'}}
-        with patch("classify_media.urllib.request.urlopen", return_value=io.BytesIO(json.dumps(envelope).encode())) as call:
+        with patch("classify_media.stream_chat", return_value={"tags": ["trees"], "reason": "Trees"}) as call:
             self.assertEqual(cli.infer(["image"], ["trees"], "vision:test", "http://gpu", 10)["tags"], ["trees"])
-            payload = json.loads(call.call_args.args[0].data)
+            payload = call.call_args.args[0]
+            self.assertTrue(payload["stream"])
             self.assertEqual(set(payload["format"]["properties"]), {"tags", "reason"})
             self.assertEqual(payload["messages"][0]["images"], ["image"])
             self.assertNotIn("sample.jpg", payload["messages"][0]["content"])
