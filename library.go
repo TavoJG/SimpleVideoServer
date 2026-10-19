@@ -20,13 +20,11 @@ type bulkItemResult struct {
 	Video   *video `json:"video,omitempty"`
 }
 type bulkRequest struct {
-	IDs         []int64  `json:"ids"`
-	Action      string   `json:"action"`
-	Category    *string  `json:"category"`
-	Subcategory *string  `json:"subcategory"`
-	Tags        []string `json:"tags"`
-	TagMode     string   `json:"tag_mode"`
-	Value       *bool    `json:"value"`
+	IDs         []int64 `json:"ids"`
+	Action      string  `json:"action"`
+	Category    *string `json:"category"`
+	Subcategory *string `json:"subcategory"`
+	Value       *bool   `json:"value"`
 }
 
 // File operations hold libraryMu through the corresponding database transaction.
@@ -69,7 +67,7 @@ func (s *server) updateMedia(item video, req updateVideoRequest) (video, error) 
 	if err := ensureCategoryTx(tx, moved.Category); err != nil {
 		return fail(err)
 	}
-	_, err = tx.Exec(`UPDATE videos SET title=?,tags=?,path=?,relative_path=?,category=?,filename=?,favorited=?,watch_later=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, title, normalizeTags(req.Tags), moved.Path, moved.RelativePath, moved.Category, moved.Filename, boolToInt(boolValueOrDefault(req.Favorited, item.Favorited)), boolToInt(boolValueOrDefault(req.WatchLater, item.WatchLater)), item.ID)
+	_, err = tx.Exec(`UPDATE videos SET title=?,path=?,relative_path=?,category=?,filename=?,favorited=?,watch_later=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, title, moved.Path, moved.RelativePath, moved.Category, moved.Filename, boolToInt(boolValueOrDefault(req.Favorited, item.Favorited)), boolToInt(boolValueOrDefault(req.WatchLater, item.WatchLater)), item.ID)
 	if err != nil {
 		return fail(err)
 	}
@@ -115,10 +113,6 @@ func validateBulk(req bulkRequest) error {
 		if req.Category == nil {
 			return fmt.Errorf("Choose a destination category.")
 		}
-	case "tags":
-		if req.TagMode != "add" && req.TagMode != "remove" && req.TagMode != "replace" {
-			return fmt.Errorf("Choose add, remove, or replace tags.")
-		}
 	case "favorited", "watch_later":
 		if req.Value == nil {
 			return fmt.Errorf("Choose an explicit flag value.")
@@ -147,7 +141,7 @@ func (s *server) runBulk(r *http.Request, req bulkRequest) []bulkItemResult {
 		}
 		if err == nil {
 			var updated video
-			patch := updateVideoRequest{Title: item.Title, Tags: item.Tags}
+			patch := updateVideoRequest{Title: item.Title}
 			switch req.Action {
 			case "move":
 				patch.Category = req.Category
@@ -157,28 +151,6 @@ func (s *server) runBulk(r *http.Request, req bulkRequest) []bulkItemResult {
 				updated, err = s.updateMedia(item, patch)
 			case "watch_later":
 				patch.WatchLater = req.Value
-				updated, err = s.updateMedia(item, patch)
-			case "tags":
-				tags := splitTags(normalizeTags(req.Tags))
-				current := item.Tags
-				if req.TagMode == "replace" {
-					current = tags
-				} else if req.TagMode == "add" {
-					current = append(append([]string{}, current...), tags...)
-				} else {
-					remove := map[string]bool{}
-					for _, tag := range tags {
-						remove[strings.ToLower(tag)] = true
-					}
-					kept := []string{}
-					for _, tag := range current {
-						if !remove[strings.ToLower(tag)] {
-							kept = append(kept, tag)
-						}
-					}
-					current = kept
-				}
-				patch.Tags = current
 				updated, err = s.updateMedia(item, patch)
 			case "delete":
 				err = s.permanentDelete(item)

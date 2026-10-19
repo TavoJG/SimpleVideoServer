@@ -553,15 +553,10 @@ label {
 .media-open:disabled { opacity: 1; cursor: default; }
 .row-checkbox { width: 1rem; align-self: center; margin: 0; padding: 0; }
 .row-actions { grid-column: 3; grid-row: 1 / 3; }
-.row-tags.tag-line { grid-column: 2; display: flex; flex-wrap: wrap; gap: 0.3rem; white-space: normal; overflow: visible; }
-.row-tags button { min-width: 0; max-width: 100%; white-space: normal; }
-.row-tags button { background: transparent; color: var(--accent-strong); font-size: 0.75rem; padding: 0.15rem; overflow-wrap: anywhere; }
 .video-row.checked { outline: 1px solid var(--accent); background: var(--row); }
 .power-navigation, .bulk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .power-navigation button, .bulk-toolbar button { padding: 0.4rem 0.5rem; font-size: 0.78rem; min-height: 2rem; }
 .bulk-toolbar { border-block: 1px solid var(--line); padding-block: 0.5rem; }
-.tag-browser { display: grid; gap: 0.4rem; overflow: auto; }
-.tag-browser button { display: flex; justify-content: space-between; gap: 0.5rem; overflow-wrap: anywhere; text-align: left; }
 .failure-panel { border-left: 3px solid #b42318; padding: 0.5rem; max-height: 10rem; overflow: auto; }
 .failure-panel p { margin: 0 0 0.4rem; font-size: 0.82rem; overflow-wrap: anywhere; }
 .confirm-dialog { max-height: calc(100dvh - 2rem); overflow: auto; }
@@ -666,7 +661,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 }
 
 .video-path,
-.tag-line,
 .meta {
   overflow: hidden;
   color: var(--muted);

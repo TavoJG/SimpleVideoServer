@@ -47,7 +47,6 @@
         <section class="sidebar-section library-tools" aria-label="Library tools">
           <nav class="power-navigation" aria-label="Library destinations">
             <button class="secondary-button" @click="showCategories">Categories</button>
-            <button class="secondary-button" @click="$router.push({ name: 'tags' })">Tags</button>
             <label class="toggle-control"><input v-model="compactMode" type="checkbox" />Compact</label>
           </nav>
           <div v-if="showCategoryGrid" class="bulk-toolbar" aria-label="Library playback">
@@ -65,20 +64,9 @@
             <button v-for="tag in activeCategoryTags" :key="tag.toLowerCase()" class="secondary-button" @click="removeCategoryTag(tag)">{{ tag }} ×</button>
             <button class="secondary-button" @click="setCategoryTagFilters([], 'all')">Clear all</button>
           </div>
-          <details v-if="!showCategoryGrid" class="tag-filters">
-            <summary>Filter by tags <span v-if="activeTags.length">({{ activeTags.length }})</span></summary>
-            <label for="tag-match">Matching</label>
-            <select id="tag-match" :value="tagMatch" @change="setTagFilters(activeTags, $event.target.value)"><option value="all">Match all</option><option value="any">Match any</option></select>
-            <label v-for="tag in tagSummaries" :key="tag.name" class="toggle-control"><input type="checkbox" :checked="activeTags.some(selected => selected.toLowerCase() === tag.name.toLowerCase())" @change="toggleTag(tag.name)" />{{ tag.name }} ({{ tag.count }})</label>
-            <p v-if="!tagSummaries.length">No tags in the accessible library.</p>
-          </details>
-          <div v-if="!showCategoryGrid && activeTags.length" class="active-tags" aria-label="Active tag filters">
-            <button v-for="tag in activeTags" :key="tag.toLowerCase()" class="secondary-button" @click="removeTag(tag)">{{ tag }} ×</button>
-            <button class="secondary-button" @click="setTagFilters([], 'all')">Clear all</button>
-          </div>
           <div class="field-group">
             <label for="search">Search</label>
-            <input id="search" v-model="query" placeholder="Title, path, or tag" />
+            <input id="search" v-model="query" placeholder="Title or path" />
           </div>
 
           <div v-if="!showCategoryGrid" class="filter-row">
@@ -104,7 +92,7 @@
             </div>
           </div>
 
-          <div v-if="!showCategoryGrid && !isTagView" class="quick-views" aria-label="Library views">
+          <div v-if="!showCategoryGrid && !isBrowseView" class="quick-views" aria-label="Library views">
             <button type="button" :class="{ active: viewMode === 'category' }" @click="setViewMode('category')">Category</button>
             <button type="button" :class="{ active: viewMode === 'recent_added' }" @click="setViewMode('recent_added')">Added</button>
             <button type="button" :class="{ active: viewMode === 'favorites' }" @click="setViewMode('favorites')">Favorites</button>
@@ -112,11 +100,7 @@
           </div>
         </section>
 
-        <nav v-if="$route.name === 'tags'" class="tag-browser" aria-label="Tags">
-          <button v-for="tag in tagSummaries" :key="tag.name" class="secondary-button" @click="$router.push({ name: 'tag', params: { tag: tag.name } })">{{ tag.name }} <strong>{{ tag.count }}</strong></button>
-          <p v-if="!tagSummaries.length" class="message">No tags in the library.</p>
-        </nav>
-        <div v-else-if="showCategoryGrid" class="category-menu">
+        <div v-if="showCategoryGrid" class="category-menu">
           <nav class="category-grid" aria-label="Categories">
             <div
               v-for="category in filteredCategorySummaries"
@@ -145,10 +129,10 @@
             </strong>
           </summary>
           <div class="selected-category-panel">
-            <button class="back-button" type="button" @click="isTagView ? $router.push({ name: 'tags' }) : showCategories()">
-              {{ isTagView ? 'Back to tags' : "Back to categories" }}
+            <button class="back-button" type="button" @click="showCategories()">
+              Back to categories
             </button>
-            <div v-if="!isTagView && isSelectedCategoryLocked" class="category-lock-status">
+            <div v-if="!isBrowseView && isSelectedCategoryLocked" class="category-lock-status">
               <p class="message">
                 {{ isSelectedCategoryUnlocked ? "Extra password verified for this category." : "This category is locked." }}
               </p>
@@ -163,7 +147,7 @@
               </button>
             </div>
 
-            <form v-if="!isTagView && isSelectedCategoryLocked && !isSelectedCategoryUnlocked" class="unlock-form" @submit.prevent="unlockSelectedCategory">
+            <form v-if="!isBrowseView && isSelectedCategoryLocked && !isSelectedCategoryUnlocked" class="unlock-form" @submit.prevent="unlockSelectedCategory">
               <div>
                 <label for="category-password">Category password</label>
                 <input
@@ -179,8 +163,8 @@
               <p v-if="categoryUnlockMessage" class="message">{{ categoryUnlockMessage }}</p>
             </form>
 
-            <button v-if="!isTagView && viewMode === 'category' && canViewSelectedCategory" class="secondary-button category-tags-edit" @click="openCategoryTags">Edit category tags</button>
-            <div v-if="!isTagView && canViewSelectedCategory" class="category-tag-badges"><span v-for="tag in selectedCategorySummary?.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></div>
+            <button v-if="!isBrowseView && viewMode === 'category' && canViewSelectedCategory" class="secondary-button category-tags-edit" @click="openCategoryTags">Edit category tags</button>
+            <div v-if="!isBrowseView && canViewSelectedCategory" class="category-tag-badges"><span v-for="tag in selectedCategorySummary?.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></div>
             <div v-if="viewMode === 'category' && canManageSelectedCategory" class="category-management">
               <button
                 class="secondary-button"
@@ -208,7 +192,7 @@
               <label class="toggle-control"><input type="checkbox" :checked="allVisibleSelected" :indeterminate="selectedIds.length > 0 && !allVisibleSelected" :disabled="!filteredVideos.length || powerBusy" @change="selectAllVisible($event.target.checked)" />{{ selectedIds.length }} selected</label>
               <button class="secondary-button" :disabled="!selectedIds.length || powerBusy" @click="clearSelection">Clear</button>
               <template v-if="selectedIds.length">
-                <button v-for="action in ['move', 'tags', 'favorited', 'watch_later', 'delete']" :key="action" class="secondary-button" :disabled="powerBusy" @click="openBulkDialog(action)">{{ actionLabels[action] }}</button>
+                <button v-for="action in ['move', 'favorited', 'watch_later', 'delete']" :key="action" class="secondary-button" :disabled="powerBusy" @click="openBulkDialog(action)">{{ actionLabels[action] }}</button>
               </template>
             </div>
             <div v-if="powerFailures.length" class="failure-panel" role="status">
@@ -249,7 +233,6 @@
                   <span class="video-path">{{ video.relative_path }}</span>
                 </span>
                 </button>
-                <span class="tag-line row-tags"><button v-for="tag in video.tags" :key="tag" @click.stop="$router.push({ name: 'tag', params: { tag } })">{{ tag }}</button></span>
                 <span class="row-actions" @click.stop>
                   <button
                     class="icon-button compact"
@@ -332,10 +315,6 @@
               <div>
                 <label for="title">Title</label>
                 <input id="title" v-model="editTitle" />
-              </div>
-              <div>
-                <label for="tags">Tags</label>
-                <textarea id="tags" v-model="editTags" placeholder="One tag per line" rows="3"></textarea>
               </div>
               <div>
                 <label for="category">Category</label>
@@ -512,10 +491,6 @@
               <input id="power-category" v-model="powerDialog.targetCategory" list="power-categories" required autocomplete="off" />
               <datalist id="power-categories"><option v-for="category in availableDestinations" :key="category" :value="category" /></datalist>
           </template>
-          <template v-if="powerDialog.action === 'tags'">
-            <label for="power-tags">Tags</label><textarea id="power-tags" v-model="powerDialog.tags" placeholder="One tag per line" rows="3"></textarea>
-            <label for="power-tag-mode">Tag operation</label><select id="power-tag-mode" v-model="powerDialog.tagMode"><option value="add">Add</option><option value="remove">Remove</option><option value="replace">Replace</option></select>
-          </template>
           <label v-if="['favorited', 'watch_later'].includes(powerDialog.action)" class="toggle-control"><input v-model="powerDialog.value" type="checkbox" />{{ actionLabels[powerDialog.action] }}</label>
           <p v-if="powerError" class="message" role="alert">{{ powerError }}</p>
           <div v-if="powerDialog.retry && powerFailures.length" class="failure-panel" role="status">
@@ -544,7 +519,7 @@ export default {
       powerError: '',
       powerFailures: [],
       retryPayload: null,
-      actionLabels: { move: 'Move', tags: 'Edit tags', favorited: 'Favorite', watch_later: 'Watch Later', rename: 'Rename', delete: 'Delete permanently' },
+      actionLabels: { move: 'Move', favorited: 'Favorite', watch_later: 'Watch Later', rename: 'Rename', delete: 'Delete permanently' },
       categorySummariesData: [],
       categoryTagsDialog: null,
       categoryTagsDraft: '',
@@ -555,7 +530,6 @@ export default {
       mappingsLoaded: false,
       selected: null,
       editTitle: "",
-      editTags: "",
       editCategory: "",
       editFavorited: false,
       editWatchLater: false,
@@ -595,33 +569,10 @@ export default {
     };
   },
   computed: {
-    isTagView() { return ['tags', 'tag', 'tag-media', 'browse', 'browse-media'].includes(this.$route.name); },
-    activeTags() {
-      const query = this.$route.query.tag;
-      const values = [...(this.$route.params.tag ? [String(this.$route.params.tag)] : []), ...(Array.isArray(query) ? query : query ? [query] : [])];
-      const seen = new Set();
-      return values.map(String).map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase()) && seen.add(tag.toLowerCase()));
-    },
-    tagMatch() { return this.$route.query.match === 'any' ? 'any' : 'all'; },
-    tagSummaries() {
-      const counts = new Map();
-      for (const video of this.videos) {
-        if (!this.canAccessVideo(video)) continue;
-        const seen = new Set();
-        for (const tag of video.tags || []) {
-          const key = tag.toLowerCase();
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const entry = counts.get(key) || { name: tag, count: 0 };
-          entry.count++;
-          counts.set(key, entry);
-        }
-      }
-      return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name));
-    },
+    isBrowseView() { return ['browse', 'browse-media'].includes(this.$route.name); },
     allVisibleSelected() { return this.filteredVideos.length > 0 && this.filteredVideos.every(video => this.selectedIds.includes(video.id)); },
     selectionContext() {
-      return JSON.stringify([this.activeTags, this.tagMatch, this.$route.params.category, this.$route.params.tag, this.isTagView, this.showCategoryGrid, this.viewMode, this.mediaFilter, this.query]);
+      return JSON.stringify([this.$route.params.category, this.isBrowseView, this.showCategoryGrid, this.viewMode, this.mediaFilter, this.query]);
     },
     availableDestinations() { return this.categorySummaries.filter(category => !category.locked || category.unlocked).map(category => category.name); },
     activeDialog() {
@@ -636,7 +587,6 @@ export default {
     emptyMediaMessage() {
       if (this.loadingLibrary) return "Loading media...";
       if (!this.configuredRoot) return "No library folder is configured.";
-      if (this.isTagView) return "No media matches these tags.";
       if (this.query.trim() || this.mediaFilter !== "all") return "No media matches these filters.";
       if (this.viewMode !== "category") return `No media in ${this.selectedCategoryLabel}.`;
       return "This category has no media.";
@@ -648,13 +598,8 @@ export default {
       const query = this.query.trim().toLowerCase();
       const filtered = this.videos.filter((video) => {
         if (!this.canAccessVideo(video)) return false;
-        if (this.activeTags.length) {
-          const available = new Set((video.tags || []).map(tag => tag.toLowerCase()));
-          const matches = this.activeTags.map(tag => available.has(tag.toLowerCase()));
-          if (this.tagMatch === 'any' ? !matches.some(Boolean) : !matches.every(Boolean)) return false;
-        }
         const category = video.category || "Uncategorized";
-        if (this.viewMode === "category" && !this.isTagView) {
+        if (this.viewMode === "category" && !this.isBrowseView) {
           if (category !== this.selectedCategory) return false;
         } else if (this.viewMode === "favorites") {
           if (!video.favorited) return false;
@@ -672,7 +617,6 @@ export default {
           video.relative_path,
           video.media_type,
           category,
-          video.tags.join(" "),
         ]
           .join(" ")
           .toLowerCase();
@@ -728,23 +672,23 @@ export default {
         watch_later: "Watch Later",
         recent_added: "Recently Added",
       };
-      if (this.isTagView) return this.activeTags.length ? `Tags: ${this.activeTags.join(' · ')}` : 'All media';
+      if (this.isBrowseView) return 'All media';
       if (this.viewMode !== "category") return labels[this.viewMode] || "Library";
       return this.selectedCategory;
     },
     isSelectedCategoryLocked() {
-      if (this.isTagView || this.viewMode !== 'category') return false;
+      if (this.isBrowseView || this.viewMode !== 'category') return false;
       return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.locked);
     },
     isSelectedCategoryUnlocked() {
       return Boolean(this.selectedCategorySummary && this.selectedCategorySummary.unlocked);
     },
     canViewSelectedCategory() {
-      if (this.isTagView || this.viewMode !== 'category') return true;
+      if (this.isBrowseView || this.viewMode !== 'category') return true;
       return !this.isSelectedCategoryLocked || this.isSelectedCategoryUnlocked;
     },
     canManageSelectedCategory() {
-      if (this.isTagView || this.viewMode !== 'category') return false;
+      if (this.isBrowseView || this.viewMode !== 'category') return false;
       return (
         this.selectedCategory !== "Uncategorized" &&
         this.categories.includes(this.selectedCategory) &&
@@ -872,17 +816,6 @@ export default {
       const seen = new Set();
       return value.split(/\r?\n/).map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase()) && seen.add(tag.toLowerCase()));
     },
-    setTagFilters(tags, match = this.tagMatch) {
-      const query = { ...this.$route.query, tag: tags.length ? tags : undefined, match: tags.length && match === 'any' ? 'any' : undefined };
-      const name = this.isTagView ? 'browse' : this.$route.name === 'categories' ? 'browse' : this.$route.params.category ? 'category' : 'browse';
-      this.selected = null;
-      this.$router.push({ name, params: name === 'category' ? { category: this.$route.params.category } : {}, query });
-    },
-    toggleTag(tag) {
-      const existing = this.activeTags.find(item => item.toLowerCase() === tag.toLowerCase());
-      this.setTagFilters(existing ? this.activeTags.filter(item => item.toLowerCase() !== tag.toLowerCase()) : [...this.activeTags, tag]);
-    },
-    removeTag(tag) { this.setTagFilters(this.activeTags.filter(item => item.toLowerCase() !== tag.toLowerCase())); },
     async loadCategoryMappings() {
       const mappings = await this.api('/api/category-migrations');
       this.categoryMappings = Array.isArray(mappings) ? mappings : [];
@@ -921,7 +854,7 @@ export default {
       this.powerFailures = [];
       this.retryPayload = null;
       this.powerError = '';
-      this.powerDialog = { action, ids, targetCategory: this.availableDestinations[0] || 'Uncategorized', tags: '', tagMode: 'add', value: true };
+      this.powerDialog = { action, ids, targetCategory: this.availableDestinations[0] || 'Uncategorized', value: true };
     },
     closePowerDialog() { if (!this.powerBusy) { this.powerDialog = null; this.powerError = ''; } },
     async submitPowerDialog() {
@@ -936,7 +869,6 @@ export default {
       }
       const payload = { ids: dialog.ids, action: dialog.action };
       if (dialog.action === 'move') payload.category = category;
-      if (dialog.action === 'tags') Object.assign(payload, { tags: this.parseTagLines(dialog.tags), tag_mode: dialog.tagMode });
       if (['favorited', 'watch_later'].includes(dialog.action)) payload.value = dialog.value;
       await this.runBulk(payload);
     },
@@ -1136,8 +1068,8 @@ export default {
         this.$router.replace(mapping ? { name: this.$route.params.id ? 'media' : 'category', params: { category: mapping.category, ...(this.$route.params.id ? { id: this.$route.params.id } : {}) }, query: this.$route.query } : { name: 'categories', query: this.$route.query });
         return;
       }
-      if (this.isTagView) {
-        const video = ['tag-media', 'browse-media'].includes(this.$route.name) ? this.filteredVideos.find(item => item.id === Number(this.$route.params.id)) : null;
+      if (this.isBrowseView) {
+        const video = this.$route.name === 'browse-media' ? this.filteredVideos.find(item => item.id === Number(this.$route.params.id)) : null;
         this.selected = null;
         if (video) this.selectVideo(video, false);
         return;
@@ -1227,7 +1159,6 @@ export default {
       this.selected = video;
       this.selectedCategory = video.category || "Uncategorized";
       this.editTitle = video.title;
-      this.editTags = video.tags.join("\n");
       this.editCategory = video.category || "Uncategorized";
       this.editFavorited = Boolean(video.favorited);
       this.editWatchLater = Boolean(video.watch_later);
@@ -1239,8 +1170,8 @@ export default {
       }
     },
     pushMediaRoute(video) {
-      if (this.isTagView) {
-        this.$router.push(this.$route.params.tag ? { name: 'tag-media', params: { tag: this.$route.params.tag, id: video.id }, query: this.routeQueryWithMediaFilter() } : { name: 'browse-media', params: { id: video.id }, query: this.routeQueryWithMediaFilter() });
+      if (this.isBrowseView) {
+        this.$router.push({ name: 'browse-media', params: { id: video.id }, query: this.routeQueryWithMediaFilter() });
         return;
       }
       const category = video.category || "Uncategorized";
@@ -1259,8 +1190,8 @@ export default {
         return;
       }
       this.selected = null;
-      if (this.isTagView) {
-        this.$router.replace(this.$route.params.tag ? { name: 'tag', params: { tag: this.$route.params.tag }, query: this.routeQueryWithMediaFilter() } : { name: 'browse', query: this.routeQueryWithMediaFilter() });
+      if (this.isBrowseView) {
+        this.$router.replace({ name: 'browse', query: this.routeQueryWithMediaFilter() });
         return;
       }
       this.$router.replace({
@@ -1348,7 +1279,6 @@ export default {
         method: "PATCH",
         body: JSON.stringify({
           title: video.title,
-          tags: video.tags,
           category: video.category || "Uncategorized",
           favorited: video.favorited,
           watch_later: video.watch_later,
@@ -1525,11 +1455,11 @@ export default {
       const fallback = currentList[currentIndex + 1] || currentList[currentIndex - 1] || null;
       this.saving = true; this.message = '';
       try {
-        const updated = await this.api(`/api/videos/${this.selected.id}`, { method: 'PATCH', body: JSON.stringify({ title: this.editTitle, tags: this.parseTagLines(this.editTags), category: this.editCategory, favorited: this.editFavorited, watch_later: this.editWatchLater }) });
+        const updated = await this.api(`/api/videos/${this.selected.id}`, { method: 'PATCH', body: JSON.stringify({ title: this.editTitle, category: this.editCategory, favorited: this.editFavorited, watch_later: this.editWatchLater }) });
         const index = this.videos.findIndex(video => video.id === updated.id);
         if (index >= 0) this.videos.splice(index, 1, updated);
         await this.loadCategories();
-        if ((updated.category || 'Uncategorized') !== currentCategory && !this.isTagView) {
+        if ((updated.category || 'Uncategorized') !== currentCategory && !this.isBrowseView) {
           const next = fallback ? this.videos.find(video => video.id === fallback.id) : null;
           if (next) this.selectVideo(next);
           else { this.selected = null; this.$router.push({ name: 'category', params: { category: currentCategory }, query: this.$route.query }); }
@@ -1560,7 +1490,7 @@ export default {
         if (fallback) this.selectVideo(fallback);
         else {
           this.selected = null;
-          if (this.isTagView) this.$router.push({ name: 'browse', query: { ...this.$route.query, tag: this.activeTags } });
+          if (this.isBrowseView) this.$router.push({ name: 'browse', query: this.$route.query });
           else this.$router.push(this.categories.includes(this.selectedCategory) ? { name: 'category', params: { category: this.selectedCategory }, query: this.$route.query } : { name: 'categories', query: this.$route.query });
         }
         this.showBanner('Permanently deleted.');

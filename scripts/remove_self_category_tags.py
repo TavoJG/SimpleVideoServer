@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove category tags matching their own category name, without changing video tags."""
+"""Remove category tags matching their own category name."""
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -85,7 +85,7 @@ def run(argv=None):
             if remaining or pending:
                 raise ValueError('Cleanup verification failed; inspect the database and backup.')
             print(f'Applied: {len(changes)} categories; '
-                  f'{sum(len(before)-len(after) for _, before, after in changes)} tags removed. Video tags unchanged.')
+                  f'{sum(len(before)-len(after) for _, before, after in changes)} tags removed.')
     return 0
 
 

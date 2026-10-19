@@ -25,11 +25,8 @@ func categoryStoredTags(t *testing.T, s *server, category string) string {
 	}
 	return tags
 }
-func TestCategoryTagsSeedOnceWithoutChangingVideoTags(t *testing.T) {
+func TestCategoryTagsSeedOnce(t *testing.T) {
 	s := libraryFixture(t)
-	id := libraryID(t, s, "hike.jpg")
-	videoTags := normalizeTags([]string{"Existing", "Travel"})
-	s.db.Exec("UPDATE videos SET tags=? WHERE id=?", videoTags, id)
 	s.db.Exec("UPDATE categories SET tags=? WHERE name='Hikes'", normalizeTags([]string{"Existing"}))
 	recordCategoryMapping(t, s, "Travel", "Hikes", "Hikes")
 	recordCategoryMapping(t, s, "travel", "Other", "Hikes")
@@ -59,11 +56,6 @@ func TestCategoryTagsSeedOnceWithoutChangingVideoTags(t *testing.T) {
 	}
 	if tags := categoryStoredTags(t, s, "Hikes"); tags != `["Art, Music","Custom"]` {
 		t.Fatal("edit overwritten", tags)
-	}
-	var after string
-	s.db.QueryRow("SELECT tags FROM videos WHERE id=?", id).Scan(&after)
-	if after != videoTags {
-		t.Fatal("video tags changed", after)
 	}
 }
 func TestCategoryTagsFollowRenameAndIgnoreAbsentMappings(t *testing.T) {

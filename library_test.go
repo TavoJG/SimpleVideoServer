@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -72,7 +71,7 @@ func bulkCall(t *testing.T, s *server, req bulkRequest) []bulkItemResult {
 	return result.Results
 }
 
-func TestBulkPartialSuccessAndTagModes(t *testing.T) {
+func TestBulkPartialSuccess(t *testing.T) {
 	s := libraryFixture(t)
 	id := libraryID(t, s, "clip.jpg")
 	locked := libraryID(t, s, "secret.jpg")
@@ -80,16 +79,6 @@ func TestBulkPartialSuccessAndTagModes(t *testing.T) {
 	results := bulkCall(t, s, bulkRequest{IDs: []int64{id, locked, 99999}, Action: "favorited", Value: &yes})
 	if !results[0].Success || results[1].Success || results[2].Success {
 		t.Fatalf("partial results: %+v", results)
-	}
-	for _, step := range []struct {
-		mode string
-		tags []string
-		want string
-	}{{"replace", []string{"Summer", "summer", "Trip"}, "Summer,Trip"}, {"add", []string{"Beach", "SUMMER"}, "Summer,Trip,Beach"}, {"remove", []string{"SUMMER"}, "Trip,Beach"}} {
-		r := bulkCall(t, s, bulkRequest{IDs: []int64{id}, Action: "tags", TagMode: step.mode, Tags: step.tags})
-		if !r[0].Success || strings.Join(r[0].Video.Tags, ",") != step.want {
-			t.Fatalf("tags: %+v", r)
-		}
 	}
 	if res := libraryCall(t, s, "POST", "/api/videos/bulk", bulkRequest{IDs: []int64{id, id}, Action: "delete"}); res.Code != 400 {
 		t.Fatal("duplicate IDs accepted")

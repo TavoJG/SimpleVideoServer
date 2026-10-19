@@ -48,52 +48,6 @@ func lockLibraryDatabase(path string, create bool) (*os.File, error) {
 	return file, nil
 }
 
-func migrateTagsJSON(db *sql.DB) error {
-	var done int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_versions WHERE name='json_tags'").Scan(&done); err != nil {
-		return err
-	}
-	if done != 0 {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	rows, err := tx.Query("SELECT id,tags FROM videos ORDER BY id")
-	if err != nil {
-		return err
-	}
-	type item struct {
-		id   int64
-		tags string
-	}
-	items := []item{}
-	for rows.Next() {
-		var item item
-		if err := rows.Scan(&item.id, &item.tags); err != nil {
-			rows.Close()
-			return err
-		}
-		items = append(items, item)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		if _, err := tx.Exec("UPDATE videos SET tags=? WHERE id=?", normalizeTags(item.tags), item.id); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec("INSERT INTO schema_versions(name) VALUES('json_tags')"); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func finishFlatSchema(db *sql.DB) error {
 	exists, err := hasColumn(db, "subcategory")
 	if err != nil {
@@ -542,8 +496,7 @@ func applyCategoryStep(db *sql.DB, step categoryMigrationStep) error {
 	}
 	for _, item := range items {
 		path := filepath.Join(target, item.Filename)
-		tags := append(append([]string{}, item.Tags...), step.Parent)
-		if _, err := tx.Exec("UPDATE videos SET path=?,relative_path=?,category=?,subcategory='',tags=? WHERE id=?", path, buildRelativePath(step.Target, "", item.Filename), step.Target, normalizeTags(tags), item.ID); err != nil {
+		if _, err := tx.Exec("UPDATE videos SET path=?,relative_path=?,category=?,subcategory='' WHERE id=?", path, buildRelativePath(step.Target, "", item.Filename), step.Target, item.ID); err != nil {
 			return fail(fmt.Errorf("media %d: %w", item.ID, err))
 		}
 	}
@@ -557,14 +510,6 @@ func applyCategoryStep(db *sql.DB, step categoryMigrationStep) error {
 		}
 		rel := buildRelativePath(step.Target, "", entry.Name())
 		if _, err := upsertScannedVideo(tx, root, rel, step.Target, entry); err != nil {
-			return fail(err)
-		}
-		// Preserve tags even if an existing record had stale category metadata.
-		var existingTags string
-		if err := tx.QueryRow("SELECT tags FROM videos WHERE path=?", filepath.Join(root, rel)).Scan(&existingTags); err != nil {
-			return fail(err)
-		}
-		if _, err := tx.Exec("UPDATE videos SET tags=? WHERE path=?", normalizeTags(append(splitTags(existingTags), step.Parent)), filepath.Join(root, rel)); err != nil {
 			return fail(err)
 		}
 	}

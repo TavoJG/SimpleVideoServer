@@ -54,23 +54,22 @@ type server struct {
 }
 
 type video struct {
-	ID           int64    `json:"id"`
-	Path         string   `json:"path"`
-	Root         string   `json:"root"`
-	RelativePath string   `json:"relative_path"`
-	Category     string   `json:"category"`
-	MediaType    string   `json:"media_type"`
-	Filename     string   `json:"filename"`
-	Title        string   `json:"title"`
-	Tags         []string `json:"tags"`
-	SizeBytes    int64    `json:"size_bytes"`
-	Mtime        float64  `json:"mtime"`
-	Missing      bool     `json:"missing"`
-	CreatedAt    string   `json:"created_at"`
-	Favorited    bool     `json:"favorited"`
-	WatchLater   bool     `json:"watch_later"`
-	StreamURL    string   `json:"stream_url"`
-	ThumbnailURL string   `json:"thumbnail_url"`
+	ID           int64   `json:"id"`
+	Path         string  `json:"path"`
+	Root         string  `json:"root"`
+	RelativePath string  `json:"relative_path"`
+	Category     string  `json:"category"`
+	MediaType    string  `json:"media_type"`
+	Filename     string  `json:"filename"`
+	Title        string  `json:"title"`
+	SizeBytes    int64   `json:"size_bytes"`
+	Mtime        float64 `json:"mtime"`
+	Missing      bool    `json:"missing"`
+	CreatedAt    string  `json:"created_at"`
+	Favorited    bool    `json:"favorited"`
+	WatchLater   bool    `json:"watch_later"`
+	StreamURL    string  `json:"stream_url"`
+	ThumbnailURL string  `json:"thumbnail_url"`
 }
 
 type categorySummary struct {
@@ -106,12 +105,11 @@ type configResponse struct {
 }
 
 type updateVideoRequest struct {
-	Title       string      `json:"title"`
-	Tags        interface{} `json:"tags"`
-	Category    *string     `json:"category"`
-	Subcategory *string     `json:"subcategory"`
-	Favorited   *bool       `json:"favorited"`
-	WatchLater  *bool       `json:"watch_later"`
+	Title       string  `json:"title"`
+	Category    *string `json:"category"`
+	Subcategory *string `json:"subcategory"`
+	Favorited   *bool   `json:"favorited"`
+	WatchLater  *bool   `json:"watch_later"`
 }
 
 type renameCategoryRequest struct {
@@ -280,7 +278,6 @@ func initDatabase(db *sql.DB, migrating bool) error {
 			media_type TEXT NOT NULL DEFAULT 'video',
 			filename TEXT NOT NULL,
 			title TEXT NOT NULL,
-			tags TEXT NOT NULL DEFAULT '',
 			size_bytes INTEGER NOT NULL DEFAULT 0,
 			mtime REAL NOT NULL DEFAULT 0,
 			missing INTEGER NOT NULL DEFAULT 0,
@@ -329,7 +326,7 @@ func initDatabase(db *sql.DB, migrating bool) error {
 		return err
 	}
 	for table, columns := range map[string][]string{
-		"videos":     {"playback_position_seconds", "duration_seconds", "last_played_at"},
+		"videos":     {"playback_position_seconds", "duration_seconds", "last_played_at", "tags"},
 		"categories": {"last_reproduced"},
 	} {
 		for _, column := range columns {
@@ -348,9 +345,6 @@ func initDatabase(db *sql.DB, migrating bool) error {
 		return err
 	}
 	if err := migrateLegacyTrash(db); err != nil {
-		return err
-	}
-	if err := migrateTagsJSON(db); err != nil {
 		return err
 	}
 	if !migrating {
@@ -722,9 +716,9 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 		where = append(where, "missing = 0")
 	}
 	if query != "" {
-		where = append(where, "(title LIKE ? OR filename LIKE ? OR relative_path LIKE ? OR category LIKE ? OR tags LIKE ?)")
+		where = append(where, "(title LIKE ? OR filename LIKE ? OR relative_path LIKE ? OR category LIKE ?)")
 		pattern := "%" + query + "%"
-		args = append(args, pattern, pattern, pattern, pattern, pattern)
+		args = append(args, pattern, pattern, pattern, pattern)
 	}
 
 	sqlQuery := videoSelectSQL()
@@ -1486,7 +1480,7 @@ func (s *server) queryVideo(id int64) (video, error) {
 }
 
 func videoSelectSQL() string {
-	return `SELECT id, path, root, relative_path, category, media_type, filename, title, tags,
+	return `SELECT id, path, root, relative_path, category, media_type, filename, title,
 		size_bytes, mtime, missing, created_at,
 		favorited, watch_later FROM videos`
 }
@@ -1501,7 +1495,6 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 	videos := []video{}
 	for rows.Next() {
 		var item video
-		var tags string
 		var missing int
 		var favorited int
 		var watchLater int
@@ -1514,7 +1507,6 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 			&item.MediaType,
 			&item.Filename,
 			&item.Title,
-			&tags,
 			&item.SizeBytes,
 			&item.Mtime,
 			&missing,
@@ -1524,7 +1516,6 @@ func (s *server) queryVideos(query string, args ...interface{}) ([]video, error)
 		); err != nil {
 			return nil, err
 		}
-		item.Tags = splitTags(tags)
 		item.Missing = missing != 0
 		item.Favorited = favorited != 0
 		item.WatchLater = watchLater != 0

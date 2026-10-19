@@ -213,7 +213,7 @@ func TestScanAndUpdateVideo(t *testing.T) {
 		t.Fatalf("demo.mp4 not found: %+v", videos)
 	}
 
-	body := bytes.NewBufferString(`{"title":"Demo Clip","tags":"test, sample, test","category":"moved"}`)
+	body := bytes.NewBufferString(`{"title":"Demo Clip","category":"moved"}`)
 	updateReq := httptest.NewRequest(http.MethodPatch, "/api/videos/1", body)
 	updateReq.SetPathValue("id", strconv.FormatInt(demoID, 10))
 	updateRes := httptest.NewRecorder()
@@ -226,7 +226,7 @@ func TestScanAndUpdateVideo(t *testing.T) {
 	if err := json.NewDecoder(updateRes.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Title != "Demo Clip" || len(updated.Tags) != 2 || updated.Category != "moved" {
+	if updated.Title != "Demo Clip" || updated.Category != "moved" {
 		t.Fatalf("unexpected updated video: %+v", updated)
 	}
 	if _, err := os.Stat(filepath.Join(root, "moved", "demo.mp4")); err != nil {
@@ -274,7 +274,7 @@ func TestVideoStateDefaultsAndUpdates(t *testing.T) {
 		t.Fatalf("unexpected default state: %+v", item)
 	}
 
-	body := bytes.NewBufferString(`{"title":"Demo","tags":[],"favorited":true,"watch_later":true}`)
+	body := bytes.NewBufferString(`{"title":"Demo","favorited":true,"watch_later":true}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/videos/1", body)
 	req.SetPathValue("id", strconv.FormatInt(item.ID, 10))
 	res := httptest.NewRecorder()
@@ -302,6 +302,7 @@ func TestInitDBRemovesLegacyPlaybackColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
+		"ALTER TABLE videos ADD COLUMN tags TEXT DEFAULT ''",
 		"ALTER TABLE videos ADD COLUMN playback_position_seconds REAL DEFAULT 0",
 		"ALTER TABLE videos ADD COLUMN duration_seconds REAL DEFAULT 0",
 		"ALTER TABLE videos ADD COLUMN last_played_at TEXT",
@@ -338,7 +339,7 @@ func TestInitDBRemovesLegacyPlaybackColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Title != "Demo" || strings.Join(item.Tags, ",") != "tag" || !item.Favorited || !item.WatchLater || item.CreatedAt != "2026-01-01" {
+	if item.Title != "Demo" || !item.Favorited || !item.WatchLater || item.CreatedAt != "2026-01-01" {
 		t.Fatalf("metadata changed: %+v", item)
 	}
 }
@@ -812,7 +813,7 @@ func TestRenameCategoryRenamesFolderAndRecords(t *testing.T) {
 
 	var item video
 	err = db.QueryRow(
-		"SELECT id, path, root, relative_path, category, '', media_type, filename, title, tags, size_bytes, mtime, missing FROM videos WHERE filename = ?",
+		"SELECT id, path, root, relative_path, category, '', media_type, filename, title, '', size_bytes, mtime, missing FROM videos WHERE filename = ?",
 		"clip.mp4",
 	).Scan(
 		&item.ID,

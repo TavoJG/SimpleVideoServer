@@ -148,7 +148,7 @@ func recoverPendingDeletions(db *sql.DB) error {
 		}
 		// If unlink completed before interruption, no file remains to restore.
 		if _, err := os.Lstat(item.Path); err == nil {
-			_, err = tx.Exec(`INSERT OR IGNORE INTO videos(id,path,root,relative_path,category,media_type,filename,title,tags,size_bytes,mtime,missing,favorited,watch_later,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Path, item.Root, item.RelativePath, item.Category, item.MediaType, item.Filename, item.Title, normalizeTags(item.Tags), item.SizeBytes, item.Mtime, boolToInt(item.Missing), boolToInt(item.Favorited), boolToInt(item.WatchLater), item.CreatedAt)
+			_, err = tx.Exec(`INSERT OR IGNORE INTO videos(id,path,root,relative_path,category,media_type,filename,title,size_bytes,mtime,missing,favorited,watch_later,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Path, item.Root, item.RelativePath, item.Category, item.MediaType, item.Filename, item.Title, item.SizeBytes, item.Mtime, boolToInt(item.Missing), boolToInt(item.Favorited), boolToInt(item.WatchLater), item.CreatedAt)
 			if err == nil && legacyColumn && legacy.Subcategory != nil {
 				_, err = tx.Exec("UPDATE videos SET subcategory=? WHERE id=?", *legacy.Subcategory, item.ID)
 			}

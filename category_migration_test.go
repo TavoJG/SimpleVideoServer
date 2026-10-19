@@ -31,7 +31,7 @@ func legacyMedia(t *testing.T, s *server, category, sub, filename string, missin
 	if !missing {
 		folderFile(t, s.defaultVideoRoot, rel)
 	}
-	result, err := s.db.Exec(`INSERT INTO videos(path,root,relative_path,category,subcategory,media_type,filename,title,tags,size_bytes,mtime,missing,created_at,updated_at,favorited,watch_later) VALUES(?,?,?,?,?,'video',?,'Saved title',?,5,123,?,'2020-01-01','2021-01-01',1,1)`, path, s.defaultVideoRoot, rel, category, sub, filename, normalizeTags([]string{"Existing"}), boolToInt(missing))
+	result, err := s.db.Exec(`INSERT INTO videos(path,root,relative_path,category,subcategory,media_type,filename,title,size_bytes,mtime,missing,created_at,updated_at,favorited,watch_later) VALUES(?,?,?,?,?,'video',?,'Saved title',5,123,?,'2020-01-01','2021-01-01',1,1)`, path, s.defaultVideoRoot, rel, category, sub, filename, boolToInt(missing))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,13 +42,12 @@ func legacyMedia(t *testing.T, s *server, category, sub, filename string, missin
 	return id
 }
 
-func TestCategoryMigrationPromotesAndTagsPreservingMetadata(t *testing.T) {
+func TestCategoryMigrationPromotesPreservingMetadata(t *testing.T) {
 	s, root, _ := categoryMigrationFixture(t)
 	id := legacyMedia(t, s, "Travel", "Japan", "clip.mp4", false)
 	direct := legacyMedia(t, s, "Travel", "", "direct.mp4", false)
 	comma := legacyMedia(t, s, "Art, Music", "Concerts", "song.mp4", false)
 	missing := legacyMedia(t, s, "Travel", "Absent", "missing.mp4", true)
-	s.db.Exec("UPDATE videos SET tags=? WHERE id=?", normalizeTags([]string{"Existing", "travel"}), id)
 	folderFile(t, root, "Travel/Japan/unindexed.jpg")
 	notes := folderFile(t, root, "Travel/Japan/notes.txt")
 	deeper := folderFile(t, root, "Travel/Japan/Deeper/ignored.mp4")
@@ -64,7 +63,7 @@ func TestCategoryMigrationPromotesAndTagsPreservingMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Category != "Japan" || item.Path != filepath.Join(root, "Japan", "clip.mp4") || item.Title != "Saved title" || !item.Favorited || !item.WatchLater || item.CreatedAt != "2020-01-01" || item.Mtime != 123 || strings.Join(item.Tags, "|") != "Existing|travel" {
+	if item.Category != "Japan" || item.Path != filepath.Join(root, "Japan", "clip.mp4") || item.Title != "Saved title" || !item.Favorited || !item.WatchLater || item.CreatedAt != "2020-01-01" || item.Mtime != 123 {
 		t.Fatalf("metadata changed: %+v", item)
 	}
 	var updated string
@@ -73,12 +72,12 @@ func TestCategoryMigrationPromotesAndTagsPreservingMetadata(t *testing.T) {
 		t.Fatal("timestamp changed")
 	}
 	directItem, _ := s.queryVideo(direct)
-	if directItem.Category != "Travel" || strings.Join(directItem.Tags, "|") != "Existing|Travel" {
-		t.Fatal("direct parent tagging", directItem)
+	if directItem.Category != "Travel" {
+		t.Fatal("direct parent changed", directItem)
 	}
 	commaItem, _ := s.queryVideo(comma)
-	if strings.Join(commaItem.Tags, "|") != "Existing|Art, Music" {
-		t.Fatal("comma tag split", commaItem.Tags)
+	if commaItem.Category != "Concerts" {
+		t.Fatal("category changed", commaItem)
 	}
 	missingItem, _ := s.queryVideo(missing)
 	if !missingItem.Missing || missingItem.Category != "Absent" {
@@ -93,9 +92,9 @@ func TestCategoryMigrationPromotesAndTagsPreservingMetadata(t *testing.T) {
 			t.Fatal("unindexed contents lost", err)
 		}
 	}
-	var tags string
-	if err := s.db.QueryRow("SELECT tags FROM videos WHERE filename='unindexed.jpg'").Scan(&tags); err != nil || tags != `["Travel"]` {
-		t.Fatal("new media not tagged", tags, err)
+	var category string
+	if err := s.db.QueryRow("SELECT category FROM videos WHERE filename='unindexed.jpg'").Scan(&category); err != nil || category != "Japan" {
+		t.Fatal("new media not indexed", category, err)
 	}
 	if exists, err := hasColumn(s.db, "subcategory"); err != nil || exists {
 		t.Fatal("legacy column retained", err)
@@ -264,7 +263,7 @@ func TestFlatStartupAndObsoleteInterfaces(t *testing.T) {
 	if strings.Contains(string(data), "subcategory") {
 		t.Fatal("public subcategory field remains")
 	}
-	if res := libraryCall(t, s, "PATCH", "/api/videos/"+fmtID(id), map[string]any{"title": item.Title, "tags": item.Tags, "subcategory": ""}); res.Code != 400 {
+	if res := libraryCall(t, s, "PATCH", "/api/videos/"+fmtID(id), map[string]any{"title": item.Title, "subcategory": ""}); res.Code != 400 {
 		t.Fatal("obsolete update accepted")
 	}
 	if res := libraryCall(t, s, "POST", "/api/videos/bulk", map[string]any{"ids": []int64{id}, "action": "move", "category": "Japan", "subcategory": ""}); res.Code != 400 {
@@ -304,40 +303,18 @@ func TestMigrationCommandApplyAndRepeatDoesNotRegenerateEditedTags(t *testing.T)
 	if !strings.Contains(out.String(), "Migration complete") {
 		t.Fatal(out.String())
 	}
-	if _, err := s.db.Exec("UPDATE videos SET tags=? WHERE id=?", normalizeTags([]string{"Edited, Tag"}), id); err != nil {
+	if _, err := s.db.Exec("UPDATE categories SET tags=? WHERE name='Japan'", normalizeTags([]string{"Edited, Tag"})); err != nil {
 		t.Fatal(err)
 	}
 	if err := runCategoryMigration(args, &out); err != nil {
 		t.Fatal(err)
 	}
 	item, err := s.queryVideo(id)
-	if err != nil || strings.Join(item.Tags, "|") != "Edited, Tag" {
-		t.Fatal("repeat regenerated tags", item, err)
+	if err != nil || item.Category != "Japan" || categoryStoredTags(t, s, "Japan") != `["Edited, Tag"]` {
+		t.Fatal("repeat changed metadata", item, err)
 	}
 	if err := initDB(s.db); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestMigrationConvertsLegacyTagsToJSONWithoutChangingTimestamps(t *testing.T) {
-	s, _, _ := categoryMigrationFixture(t)
-	id := legacyMedia(t, s, "Travel", "", "clip.mp4", false)
-	s.db.Exec("DELETE FROM schema_versions WHERE name='json_tags'")
-	s.db.Exec("UPDATE videos SET tags='One, one, Two' WHERE id=?", id)
-	if err := migrateTagsJSON(s.db); err != nil {
-		t.Fatal(err)
-	}
-	var tags, updated string
-	if err := s.db.QueryRow("SELECT tags,updated_at FROM videos WHERE id=?", id).Scan(&tags, &updated); err != nil || tags != `["One","Two"]` || updated != "2021-01-01" {
-		t.Fatal("conversion changed values", tags, updated, err)
-	}
-	s.db.Exec("UPDATE videos SET tags=? WHERE id=?", normalizeTags([]string{"Art, Music"}), id)
-	if err := migrateTagsJSON(s.db); err != nil {
-		t.Fatal(err)
-	}
-	item, err := s.queryVideo(id)
-	if err != nil || len(item.Tags) != 1 || item.Tags[0] != "Art, Music" {
-		t.Fatal("JSON tags split", item, err)
 	}
 }
 
