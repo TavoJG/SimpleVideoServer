@@ -8,7 +8,7 @@
 
 ## Library Management
 
-- Completed: bulk moving, tagging, favorite/watch-later edits, recoverable deletion, and failed-item retry.
+- Completed: bulk moving, favorite/watch-later edits, recoverable deletion, and failed-item retry.
 - Completed: exact tag browsing across accessible media.
 - Completed: Trash with restore and explicit permanent deletion.
 - Completed: subcategory management and persistent compact browsing.

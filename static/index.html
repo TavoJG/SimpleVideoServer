@@ -43,7 +43,7 @@
         </form>
 
         <label class="search-box" for="search">Search</label>
-        <input id="search" v-model="query" placeholder="Title, path, or tag" />
+              <input id="search" v-model="query" placeholder="Title or path" />
 
         <nav v-if="categoryView === 'categories'" class="category-grid" aria-label="Categories">
           <div
@@ -102,7 +102,6 @@
               <span class="video-title">{{ video.title }}</span>
               <span class="media-type">{{ video.media_type }}</span>
               <span class="video-path">{{ video.relative_path }}</span>
-              <span v-if="video.tags.length" class="tag-line">{{ video.tags.join(", ") }}</span>
             </span>
           </button>
           <p v-if="!filteredVideos.length" class="message">No media in this category.</p>
@@ -161,8 +160,6 @@
               <input id="title" v-model="editTitle" />
             </div>
             <div>
-              <label for="tags">Tags</label>
-              <input id="tags" v-model="editTags" placeholder="family, travel, 2024" />
             </div>
             <div>
               <label for="category">Category</label>

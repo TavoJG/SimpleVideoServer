@@ -6,7 +6,6 @@ createApp({
       videos: [],
       selected: null,
       editTitle: "",
-      editTags: "",
       editCategory: "",
       customCategory: false,
       configuredRoot: "",
@@ -49,7 +48,6 @@ createApp({
           video.relative_path,
           video.media_type,
           category,
-          video.tags.join(" "),
         ]
           .join(" ")
           .toLowerCase();
@@ -190,7 +188,6 @@ createApp({
       this.clearImageAdvanceTimer();
       this.selected = video;
       this.editTitle = video.title;
-      this.editTags = video.tags.join(", ");
       this.editCategory = video.category || "Uncategorized";
       this.customCategory = false;
       this.message = "";
@@ -330,7 +327,6 @@ createApp({
           method: "PATCH",
           body: JSON.stringify({
             title: this.editTitle,
-            tags: this.editTags,
             category: this.editCategory,
           }),
         });

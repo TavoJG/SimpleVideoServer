@@ -13,7 +13,7 @@ func TestScanReconcilesFoldersAndPreservesMissingMetadata(t *testing.T) {
 	s := libraryFixture(t)
 	item, _ := s.queryVideo(libraryID(t, s, "clip.jpg"))
 	yes := true
-	item, err := s.updateMedia(item, updateVideoRequest{Title: "Keep title", Tags: []string{"Summer"}, Favorited: &yes, WatchLater: &yes})
+	item, err := s.updateMedia(item, updateVideoRequest{Title: "Keep title", Favorited: &yes, WatchLater: &yes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestScanReconcilesFoldersAndPreservesMissingMetadata(t *testing.T) {
 		t.Fatal("unsupported nested files counted")
 	}
 	kept, err := s.queryVideo(item.ID)
-	if err != nil || !kept.Missing || kept.Title != "Keep title" || !kept.Favorited || !kept.WatchLater || strings.Join(kept.Tags, ",") != "Summer" {
+	if err != nil || !kept.Missing || kept.Title != "Keep title" || !kept.Favorited || !kept.WatchLater {
 		t.Fatalf("metadata: %+v %v", kept, err)
 	}
 	if _, err := os.Stat(s.defaultVideoRoot); err != nil {
@@ -148,7 +148,7 @@ func TestLegacyTrashMigrationPreservesMetadataCollisionLocksAndResidualFiles(t *
 	s := libraryFixture(t)
 	id := libraryID(t, s, "secret.jpg")
 	item, _ := s.queryVideo(id)
-	if _, err := s.db.Exec("UPDATE videos SET title='Saved',tags='Keep',favorited=1,watch_later=1 WHERE id=?", id); err != nil {
+	if _, err := s.db.Exec("UPDATE videos SET title='Saved',favorited=1,watch_later=1 WHERE id=?", id); err != nil {
 		t.Fatal(err)
 	}
 	trash := addLegacyTrash(t, s, id, true)
@@ -162,7 +162,7 @@ func TestLegacyTrashMigrationPreservesMetadataCollisionLocksAndResidualFiles(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Filename != "secret_1.jpg" || restored.Title != "Saved" || strings.Join(restored.Tags, ",") != "Keep" || !restored.Favorited || !restored.WatchLater || restored.CreatedAt != item.CreatedAt {
+	if restored.Filename != "secret_1.jpg" || restored.Title != "Saved" || !restored.Favorited || !restored.WatchLater || restored.CreatedAt != item.CreatedAt {
 		t.Fatalf("metadata changed: %+v", restored)
 	}
 	if data, err := os.ReadFile(restored.Path); err != nil || string(data) != "Private/secret.jpg" {

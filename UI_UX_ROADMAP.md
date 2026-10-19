@@ -16,8 +16,8 @@ Phase 1 is complete: clearer sidebar grouping, calmer view controls, stronger me
 ## Phase 3: Library Power Tools
 
 - Completed: media selection, select-all for filtered results, and stable selection across sorting.
-- Completed: bulk moves, tag add/remove/replace, explicit favorite/watch-later edits, trash confirmation, per-item errors, and retry.
-- Completed: navigable tag browser with exact case-insensitive filtering.
+- Completed: bulk moves, explicit favorite/watch-later edits, trash confirmation, per-item errors, and retry.
+- Completed: category-tag filtering with exact case-insensitive matching.
 - Completed: trash, restore, destination selection, permanent deletion, and accessible-only Empty Trash. Files are retained until explicitly deleted.
 - Completed: subcategory rename, move, promotion, and trash with two-level constraints, collision checks, and preservation of unindexed files.
 - Completed: optional compact browsing persisted per browser.

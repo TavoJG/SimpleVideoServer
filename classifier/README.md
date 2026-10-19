@@ -1,10 +1,14 @@
-# Standalone Visual Media Classifier
+# Standalone Visual Category Tagger
 
 Run this Python 3.10+ script on the Linux media server. It reads the existing app
-SQLite database and media files, extracts JPEG previews with FFmpeg, and calls
-an Ollama vision model directly. Ollama can run on this server or a separate GPU
+SQLite database and media files, extracts JPEG previews with FFmpeg, and suggests
+tags for each existing category. Ollama can run on this server or a separate GPU
 machine. The web app and the former classifier HTTP adapter are not involved.
 No Python packages need installation.
+
+Only `categories.tags` is updated. Existing category tags are always preserved;
+new suggestions are added case-insensitively without duplicates. The script
+does not assign categories, move files, or change media records.
 
 Install FFmpeg/FFprobe and use an Ollama model that supports vision and structured
 outputs. Set `CLASSIFIER_MODEL` or supply `--model` with the exact installed model
@@ -113,89 +117,84 @@ missing-model errors, check `ollama list` on the GPU host and use the exact tag.
 For timeouts, try `--frames 2 --timeout 300` and inspect GPU memory usage.
 View service errors with `journalctl -u ollama -n 100 --no-pager`.
 
-## Lists
+## Allowed Tags
 
-Supply UTF-8 JSON arrays. The model can select only these exact values:
-
-```json
-["Forests", "Beaches", "People", "Uncategorized"]
-```
-
-Category labels are single folder names; nested category paths are rejected. `Uncategorized` means
-the media root. New listed folders are created when a file is assigned there.
-The model never invents categories. An ambiguous category result is `null`,
-which leaves the current location unchanged.
+Supply a UTF-8 JSON array of allowed category tags:
 
 ```json
 ["forest", "beach", "people", "indoors", "vehicles"]
 ```
 
-Tags support multiple matches. Existing tags are **replaced** with selected tags
-by default; no matches clears them. Use `--tag-mode add` to preserve existing tags.
-Example lists are included in this directory; edit copies to match your library.
+The model selects only these exact values. Existing tags not in this list remain
+untouched. Tags such as `"Art, Music"` are supported. Edit a copy of
+`tags.example.json` to match your library. No category list is needed.
+
+Each sampled media item provides visual evidence. Its suggested tags are
+combined with those from the other samples in the category. An empty suggestion
+adds nothing and never clears tags. Samples do not receive their own tags.
 
 ## Run
 
-First scan the library in the web app so its file metadata is current. Preview:
+First scan the library in the web app so category and file metadata are current.
+The database must have the app's category-tag migration; start the updated app
+once if the script reports a missing `categories.tags` column. Preview:
 
 ```sh
 python3 classifier/classify_media.py \
   --db /srv/video_server/videos.sqlite3 \
-  --categories classifier/categories.example.json \
   --tags classifier/tags.example.json \
   --model your-vision-model:tag \
   --ollama-url http://GPU_HOST:11434 \
-  --limit 10 --report /tmp/media-preview.jsonl
+  --limit 10 --report /tmp/category-tags-preview.jsonl
 ```
 
 For automatic application, stop the web app, run the same command with `--apply`,
-then restart it. The process directly updates SQLite and moves files; stopping
-the app avoids concurrent scans and file edits during a move. A database-adjacent
-lock file prevents simultaneous CLI runs. Back up the database before a first
-large batch. Offline execution uses the server account's filesystem access,
-including any categories locked in the browser.
+then restart it. Stopping the app avoids scans, renames and category deletion
+during inference. SQLite transactions merge suggestions with the latest stored
+tags, preserving additions made since inference started. A database-adjacent lock
+prevents simultaneous CLI runs. Offline execution uses the server account's
+filesystem access, including any categories locked in the browser.
 
 ```sh
 python3 classifier/classify_media.py \
   --db /srv/video_server/videos.sqlite3 \
-  --categories /srv/video_server/categories.json \
   --tags /srv/video_server/tags.json \
   --model your-vision-model:tag --apply \
-  --report /tmp/media-applied.jsonl
+  --report /tmp/category-tags-applied.jsonl
 ```
 
-Omit `--categories` for tagging only; omit `--tags` for classification only.
-`--source-category Forests` restricts input to that flat category.
-Repeat `--id 123` to process specific IDs or retry failed items. `--limit N`
-processes the first N active items by ID. Each run re-evaluates its selected media.
-Missing media is excluded. Stale indexed metadata is rejected.
+`--tags` is required. Repeat `--source-category Forests` to target specific
+categories, including `Uncategorized` for the root. `--limit N` limits the number
+of categories, ordered by category ID. By default, up to eight media items per
+category are sampled evenly across media IDs. Use `--media-limit N` to change
+that count or `--media-limit 0` to inspect all indexed media in each category.
+This sampling is deterministic, not random; use all media for broader coverage.
+Missing media is excluded, stale metadata is rejected, and empty categories are
+skipped. Re-running the script adds only newly suggested tags.
+
+Category assignment remains a manual app operation.
 
 Images are resized to fit 768 by 768. Videos use up to eight evenly sampled
 frames excluding the beginning and end; short clips use fewer frames. `--frames`
 accepts 1 through 8. `--timeout` defaults to 180 seconds for each extraction or
-inference operation. All selected tasks share one visual inference per item.
+inference operation. Each sampled media item uses one visual inference.
 Filenames and existing tags are not sent to the model.
 
 `OLLAMA_URL` and `CLASSIFIER_MODEL` provide defaults for their flags. If an
 Ollama reverse proxy requires bearer authentication, set `OLLAMA_TOKEN`. Use a
 trusted network or TLS proxy for remote inference. The script sends only visual
-previews and the supplied lists. Old `CLASSIFIER_URL`/`CLASSIFIER_TOKEN` settings
+previews and the supplied tag list. Old `CLASSIFIER_URL`/`CLASSIFIER_TOKEN` settings
 and old classifier job tables are no longer used; historical tables are left
 untouched.
 
-Results are JSONL, one record per item with ID, destination, tags, explanation,
-applied status and any error. Errors leave that item's metadata unchanged and
-processing continues. Exit codes: 0 success, 1 errors, 2 invalid arguments,
-130 interrupted. Ctrl-C stops between operations and cancels application through
-transaction rollback. A forced kill or power failure between a filesystem move
-and database commit cannot be rolled back automatically; rescan the library to
-reconcile such a failure.
-
-File collisions get a numbered suffix. Moves use hard links followed by unlink
-to avoid overwriting destinations, so source and destination must be on the same
-filesystem; moves across mount points fail without changing the source. Folder
-symlinks are rejected. Library IDs, titles, favorites and watch-later flags are
-preserved.
+Results are JSONL, one record per category: category ID/name, existing tags,
+suggested tags, added tags, merged tags, evidence per sampled media ID, applied
+status and errors. In preview mode, `added_tags` means proposed additions.
+Successful samples can contribute tags even if another sample fails; errors are
+reported and produce exit code 1. If all samples fail, nothing is applied.
+Changed/deleted categories or changed evidence prevent application for that
+category. Exit codes: 0 success, 1 errors, 2 invalid arguments, 130 interrupted.
+Database writes are transactional; the filesystem is never modified.
 
 Run tests with `python3 -m unittest discover -s classifier -p 'test_*.py'`.
 
