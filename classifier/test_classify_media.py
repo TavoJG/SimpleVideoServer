@@ -84,7 +84,7 @@ class CategoryTaggerTests(unittest.TestCase):
         output = io.StringIO()
         results = results if results is not None else [{"tags": ["trees"], "reason": "Trees"}]
         with patch("classify_media.previews", return_value=["preview"]), patch("classify_media.infer", side_effect=results), contextlib.redirect_stdout(output):
-            code = cli.main(["--db", str(self.db_path), "--tags", str(self.tag_path), "--model", "vision:test", "--quiet", *extra])
+            code = cli.main(["--db", str(self.db_path), "--tags", str(self.tag_path), "--model", "vision:test", "--quiet", "--no-checkpoint", *extra])
         return code, [json.loads(line) for line in output.getvalue().splitlines()]
 
     def test_cli_category_report_and_apply(self):

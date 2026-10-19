@@ -244,6 +244,51 @@ This sampling is deterministic, not random; use all media for broader coverage.
 Missing media is excluded, stale metadata is rejected, and empty categories are
 skipped. Re-running the script adds only newly suggested tags.
 
+### Resume After Failures or Interruption
+
+Checkpointing is automatic. Successful media results are committed immediately
+to `<database-path>.classifier-checkpoint.sqlite3`, even before a category has
+finished. If a request fails, the process is interrupted, or saving category tags
+fails, rerun the same command. Completed media are reused without frame
+extraction or Ollama calls; failed and unfinished media are retried. This also
+lets a preview run supply cached results to a later `--apply` run.
+
+For example, run this command again after an interruption:
+
+```sh
+python3 classifier/classify_media.py \
+  --db /opt/video-server/videos.sqlite3 \
+  --tags /opt/video-server/tags.json --model gemma3:4b \
+  --ollama-url http://GPU_HOST:11434 \
+  --media-limit 0 --frames 8 --timeout 300 --apply \
+  --report /tmp/category-tags-applied.jsonl
+```
+
+The script still visits selected categories and checks current media metadata,
+but skips expensive analysis for completed items. Categories are rebuilt from
+all selected cached and fresh results, then merged with their latest tags.
+The output report is rewritten for the new run, including reused results.
+The report is not the checkpoint, so a partially written report does not lose
+completed media work.
+
+Progress marks reused media with `reused checkpoint; no Ollama call`; reports
+include `cached_media` and `analyzed_media` counts, and the final stdout summary
+shows the totals.
+
+Results are invalidated when the database path, media identity/path/category,
+size or modification time, model name, Ollama URL, frame count, allowed tag list
+or script's inference version changes. Category tag edits and timeout changes
+do not invalidate results. File changes are detected through filesystem identity,
+size and timestamps, not a full content hash. If a model is replaced under the
+same model tag at the same server URL, use a new checkpoint path for fresh results.
+
+Use `--checkpoint /path/to/resume.sqlite3` to choose another checkpoint file.
+Use `--no-checkpoint` to force fresh analysis without reading or updating the
+checkpoint. Keep the checkpoint with the database when deploying subsequent
+script updates. It contains model results, not images or video frames.
+The cache is separate from the app database and never changes media records.
+`--apply-report` operates independently and neither needs nor updates a checkpoint.
+
 `--source-category` and `--limit` select inference categories and cannot be used
 with `--apply-report`; saved-report mode uses the categories in the file.
 

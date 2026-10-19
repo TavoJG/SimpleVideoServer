@@ -4,6 +4,7 @@ import argparse
 import base64
 from contextlib import ExitStack
 import fcntl
+import hashlib
 import http.client
 import json
 import math
@@ -247,6 +248,27 @@ def sample_media(items, limit):
     return [items[round(i * (len(items) - 1) / (limit - 1))] for i in range(limit)]
 
 
+def checkpoint_key(db_path, item, stamp, args, tags):
+    # Increment version when the prompt or preview preparation changes.
+    descriptor = {"version": 1, "database": str(db_path),
+                  "media": {key: item[key] for key in ("id", "path", "root", "category", "media_type", "size_bytes", "mtime")},
+                  "identity": stamp, "model": args.model, "url": args.ollama_url.rstrip("/"),
+                  "frames": args.frames, "tags": tags}
+    return hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()
+
+
+def open_checkpoint(path):
+    cache = sqlite3.connect(path, timeout=30)
+    try:
+        cache.execute("PRAGMA synchronous=FULL")
+        cache.execute("CREATE TABLE IF NOT EXISTS media_results (key TEXT PRIMARY KEY, result TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        cache.commit()
+        return cache
+    except BaseException:
+        cache.close()
+        raise
+
+
 def load_report(path, allowed=None):
     records, seen = [], set()
     with path.open() as source:
@@ -351,6 +373,9 @@ def main(argv=None):
     parser.add_argument("--source-category", action="append", help="Only this category; repeatable")
     parser.add_argument("--limit", type=int, help="Maximum number of categories")
     parser.add_argument("--media-limit", type=int, default=8, help="Media sampled per category; 0 means all (default: 8)")
+    checkpoint_mode = parser.add_mutually_exclusive_group()
+    checkpoint_mode.add_argument("--checkpoint", type=Path, help="Checkpoint SQLite path (default: <db>.classifier-checkpoint.sqlite3)")
+    checkpoint_mode.add_argument("--no-checkpoint", action="store_true", help="Analyze every selected media item without reading or writing checkpoints")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="Analyze and add suggested tags to categories")
     mode.add_argument("--apply-report", type=Path, help="Apply saved JSONL suggestions without Ollama or frame extraction")
@@ -361,6 +386,8 @@ def main(argv=None):
         parser.error("Supply --tags and --model or CLASSIFIER_MODEL for inference")
     if args.apply_report and (args.source_category or args.limit):
         parser.error("--apply-report applies the saved categories; omit --source-category and --limit")
+    if args.apply_report and (args.checkpoint or args.no_checkpoint):
+        parser.error("Checkpoints apply only to inference, not --apply-report")
     if args.read_timeout is None:
         args.read_timeout = args.timeout
     if any(not math.isfinite(value) or value <= 0 for value in (args.timeout, args.connect_timeout, args.read_timeout, args.progress_interval)) or args.media_limit < 0 or (args.limit is not None and args.limit <= 0):
@@ -393,10 +420,20 @@ def main(argv=None):
                 found = {category["name"].casefold() for category in categories}
                 if any(name.casefold() != "uncategorized" and name.casefold() not in found for name in args.source_category):
                     raise ValueError("Requested source category not found")
+            protected = {db_path, Path(str(db_path) + ".classifier.lock"), Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")}
+            protected.update(Path(p).resolve() for p in (args.tags, args.apply_report) if p)
+            protected.update(Path(row[0]).resolve() for row in db.execute("SELECT path FROM videos"))
+            cache = None
+            if not args.apply_report and not args.no_checkpoint:
+                checkpoint_path = (args.checkpoint or Path(str(db_path) + ".classifier-checkpoint.sqlite3")).resolve()
+                checkpoint_files = {Path(str(checkpoint_path) + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
+                if checkpoint_files & protected or (args.report and args.report.resolve() in checkpoint_files):
+                    raise ValueError("Checkpoint must not overwrite database, input, media or report files")
+                protected.update(checkpoint_files)
+                cache = open_checkpoint(checkpoint_path)
+                stack.callback(cache.close)
+                progress(f"Checkpoint: {checkpoint_path} (successful media results are reused automatically)")
             if args.report:
-                protected = {db_path, Path(str(db_path) + ".classifier.lock"), Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")}
-                protected.update(Path(p).resolve() for p in (args.tags, args.apply_report) if p)
-                protected.update(Path(row[0]).resolve() for row in db.execute("SELECT path FROM videos"))
                 if args.report.resolve() in protected:
                     raise ValueError("Report must not overwrite the database, tags, lock file, or media")
                 report = stack.enter_context(args.report.open("w"))
@@ -407,32 +444,53 @@ def main(argv=None):
                 return apply_saved_report(db, saved_records, report, progress)
             progress(f"{'Applying' if args.apply else 'Previewing'} tags for {len(categories)} categories")
             failures = 0
+            reused_total, analyzed_total = 0, 0
             for category_index, category in enumerate(categories, 1):
                 progress(f"[{category_index}/{len(categories)}] Category {category['name']!r}")
                 existing = read_tags(category["tags"])
                 record = {"category_id": category["id"], "category": category["name"], "existing_tags": existing,
-                          "suggested_tags": [], "added_tags": [], "tags": existing, "applied": False, "evidence": [], "errors": []}
+                          "suggested_tags": [], "added_tags": [], "tags": existing, "applied": False, "evidence": [], "errors": [],
+                          "cached_media": 0, "analyzed_media": 0}
                 evidence, suggested = [], []
                 items = db.execute("SELECT * FROM videos WHERE category=? COLLATE NOCASE AND missing=0 ORDER BY id", (category["name"],)).fetchall()
                 selected = sample_media(items, args.media_limit)
                 progress(f"  Sampling {len(selected)} of {len(items)} media item(s)")
                 for item_index, item in enumerate(selected, 1):
                     try:
-                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: extracting previews")
+                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: checking media")
                         stamp = identity(item["path"])
                         if Path(item["path"]).is_symlink() or not Path(item["path"]).is_file():
                             raise ValueError("Media must be a regular file")
                         if stamp[2] != item["size_bytes"] or abs(stamp[3] / 1e9 - item["mtime"]) > 0.000001:
                             raise ValueError("Database metadata is stale; scan the library first")
-                        images = previews(item, args.frames, args.timeout)
-                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: waiting for Ollama")
-                        result = infer(images, tags, args.model,
-                                       args.ollama_url, args.timeout, os.getenv("OLLAMA_TOKEN"),
-                                       connect_timeout=args.connect_timeout, read_timeout=args.read_timeout,
-                                       progress=progress, progress_interval=args.progress_interval)
+                        key = checkpoint_key(db_path, item, stamp, args, tags)
+                        saved = cache.execute("SELECT result FROM media_results WHERE key=?", (key,)).fetchone() if cache is not None else None
+                        reused = saved is not None
+                        if reused:
+                            result = validate_result(json.loads(saved[0]), tags)
+                            record["cached_media"] += 1
+                            reused_total += 1
+                            progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: reused checkpoint; no Ollama call")
+                        else:
+                            progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: extracting previews")
+                            images = previews(item, args.frames, args.timeout)
+                            progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: waiting for Ollama")
+                            result = validate_result(infer(images, tags, args.model,
+                                           args.ollama_url, args.timeout, os.getenv("OLLAMA_TOKEN"),
+                                           connect_timeout=args.connect_timeout, read_timeout=args.read_timeout,
+                                           progress=progress, progress_interval=args.progress_interval), tags)
+                            current = db.execute("SELECT * FROM videos WHERE id=?", (item["id"],)).fetchone()
+                            if current is None or dict(current) != dict(item) or identity(item["path"]) != stamp:
+                                raise ValueError("Media changed during inference; retry")
+                            if cache is not None:
+                                # Commit each result before moving on, even within an unfinished category.
+                                with cache:
+                                    cache.execute("INSERT OR REPLACE INTO media_results(key,result) VALUES(?,?)", (key, json.dumps(result)))
+                            record["analyzed_media"] += 1
+                            analyzed_total += 1
                         suggested, _ = merge_tags(suggested, result["tags"])
                         evidence.append((item, stamp))
-                        record["evidence"].append({"media_id": item["id"], **result, "snapshot": dict(item), "identity": list(stamp)})
+                        record["evidence"].append({"media_id": item["id"], **result, "snapshot": dict(item), "identity": list(stamp), "cached": reused})
                         progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: {len(result['tags'])} suggested tag(s)")
                     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
                         record["errors"].append({"media_id": item["id"], "error": str(error)})
@@ -452,7 +510,7 @@ def main(argv=None):
                 print(json.dumps(record), file=report, flush=True)
                 progress(f"  {'Applied' if record['applied'] else 'Previewed'}: {len(record['added_tags'])} new tag(s); {len(record['errors'])} error(s)")
                 progress(f"  Proposed tags for {category['name']!r}: {json.dumps(record['suggested_tags'], ensure_ascii=False)}")
-            progress(f"Finished {len(categories)} categories in {time.monotonic() - started:.1f}s; {failures} with errors")
+            progress(f"Finished {len(categories)} categories in {time.monotonic() - started:.1f}s; {analyzed_total} analyzed, {reused_total} reused; {failures} with errors")
             return 1 if failures else 0
     except (OSError, ValueError, sqlite3.Error) as error:
         print(str(error), file=sys.stderr)
