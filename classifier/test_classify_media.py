@@ -45,7 +45,7 @@ class CategoryTaggerTests(unittest.TestCase):
 
     def test_add_only_and_idempotence(self):
         before = dict(self.item)
-        merged, added = cli.apply_result(self.db, self.category, self.evidence(), ["art, music", "trees", "trees"])
+        merged, added = cli.apply_result(self.db, self.category, self.evidence(), ["trees"])
         self.assertEqual(merged, ["Existing", "Art, Music", "trees"])
         self.assertEqual(added, ["trees"])
         self.assertEqual(cli.apply_result(self.db, self.category, self.evidence(), ["trees"])[1], [])
@@ -111,7 +111,7 @@ class CategoryTaggerTests(unittest.TestCase):
         self.assertEqual(records[0]["errors"][0]["media_id"], 1)
         self.assertEqual(self.stored(), ["Existing", "Art, Music", "trees"])
         code, records = self.run_cli(["--source-category", "Nature"], [{"tags": ["trees"], "reason": ""}, {"tags": ["art, music"], "reason": ""}])
-        self.assertEqual(records[0]["suggested_tags"], ["trees", "art, music"])
+        self.assertEqual(records[0]["suggested_tags"], ["trees"])
 
     def test_validation_and_removed_flags(self):
         with self.assertRaises(ValueError):
@@ -129,12 +129,41 @@ class CategoryTaggerTests(unittest.TestCase):
             payload = call.call_args.args[0]
             self.assertTrue(payload["stream"])
             self.assertEqual(set(payload["format"]["properties"]), {"tags", "reason"})
+            self.assertEqual(payload["format"]["properties"]["tags"]["maxItems"], 1)
             self.assertEqual(payload["messages"][0]["images"], ["image"])
             self.assertNotIn("sample.jpg", payload["messages"][0]["content"])
 
     def test_even_media_sampling(self):
         self.assertEqual(cli.sample_media(list(range(10)), 3), [0, 4, 9])
         self.assertEqual(cli.sample_media(list(range(10)), 0), list(range(10)))
+
+    def test_single_category_tag_uses_votes_and_stable_ties(self):
+        evidence = [{"media_id": 1, "tags": ["trees"]}, {"media_id": 2, "tags": ["art, music"]},
+                    {"media_id": 3, "tags": ["trees"]}]
+        self.assertEqual(cli.select_category_tag(evidence, ["art, music", "trees"]), ["trees"])
+        self.assertEqual(cli.select_category_tag(evidence[:2], ["art, music", "trees"]), ["art, music"])
+        self.assertEqual(cli.select_category_tag([{"media_id": 1, "tags": []}], ["trees"]), [])
+        merged, added = cli.apply_result(self.db, self.category, self.evidence(), ["Art, Music"])
+        self.assertEqual((merged, added), (["Existing", "Art, Music"], []))
+
+    def test_multiple_model_or_application_tags_are_rejected(self):
+        with self.assertRaises(ValueError):
+            cli.validate_result({"tags": ["trees", "art, music"], "reason": ""}, ["trees", "art, music"])
+        with self.assertRaises(ValueError):
+            cli.apply_result(self.db, self.category, self.evidence(), ["trees", "other"])
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_old_multitag_report_applies_only_one_supported_suggestion(self):
+        path = self.saved_preview(legacy=True)
+        record = json.loads(path.read_text())
+        record["suggested_tags"] = ["trees", "mountains"]
+        record["evidence"][0]["tags"] = ["trees", "mountains"]
+        path.write_text(json.dumps(record) + "\n")
+        code, _, output = self.replay(path)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)["suggested_tags"], ["trees"])
+        self.assertEqual(json.loads(output)["added_tags"], ["trees"])
+        self.assertEqual(self.stored(), ["Existing", "Art, Music", "trees"])
 
     def test_special_category_is_excluded_from_analysis_and_limit(self):
         self.db.execute("INSERT INTO categories VALUES(0,'Uncategorized','[\"Keep root\"]',NULL)")

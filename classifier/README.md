@@ -7,7 +7,8 @@ machine. The web app and the former classifier HTTP adapter are not involved.
 No Python packages need installation.
 
 Only `categories.tags` is updated. Existing category tags are always preserved;
-new suggestions are added case-insensitively without duplicates. The script
+at most one best-supported tag is added per category per run, case-insensitively
+without duplicates. The script
 does not assign categories, move files, or change media records.
 
 Install FFmpeg/FFprobe and use an Ollama model that supports vision and structured
@@ -129,9 +130,13 @@ The model selects only these exact values. Existing tags not in this list remain
 untouched. Tags such as `"Art, Music"` are supported. Edit a copy of
 `tags.example.json` to match your library. No category list is needed.
 
-Each sampled media item provides visual evidence. Its suggested tags are
-combined with those from the other samples in the category. An empty suggestion
-adds nothing and never clears tags. Samples do not receive their own tags.
+Each sampled media item selects its single best-matching tag, or none when the
+evidence is insufficient. The category's proposed tag is the one selected by the
+most sampled items. This is a vote count, not a calibrated probability. Ties use
+the order in your allowed tag list. Existing category tags do not affect the
+winner: if it is already present, nothing is added rather than choosing a less
+supported tag. An empty suggestion adds nothing and never clears tags.
+Samples do not receive their own tags.
 
 ## Run
 
@@ -186,6 +191,10 @@ never the preview's old tag list, so later additions are preserved. Reapplying
 the same preview does not duplicate tags. Only `suggested_tags` are applied;
 `tags` and `added_tags` in the preview are informational.
 
+Older previews containing multiple suggestions are reduced to one winner using
+the saved media evidence. Ties use the order of `suggested_tags` in that report.
+The same one-tag limit applies when replaying a report.
+
 New previews include the sampled media's database snapshots and file identity.
 Changed, moved, deleted or missing evidence prevents applying that category.
 Older category previews without snapshots are also accepted: current media
@@ -204,7 +213,7 @@ paths different so the original preview remains available.
 Progress is printed immediately to **stdout**: category position, sampled-media
 position, preview extraction, waiting for Ollama, tag counts, errors and a final
 summary. Each completed category prints its full proposed tag list, for example
-`Proposed tags for 'Nature': ["forest", "mountain"]`. An empty list is printed as
+`Proposed tags for 'Nature': ["forest"]`. An empty list is printed as
 `[]`. Saved-report application also prints progress and proposed tags for each
 category; its applied/skipped/failed message identifies whether they were saved.
 
@@ -281,6 +290,10 @@ or script's inference version changes. Category tag edits and timeout changes
 do not invalidate results. File changes are detected through filesystem identity,
 size and timestamps, not a full content hash. If a model is replaced under the
 same model tag at the same server URL, use a new checkpoint path for fresh results.
+
+This single-tag update increments the inference version, so older checkpoints
+are automatically bypassed once. Subsequent runs reuse the new single-tag
+results normally.
 
 Use `--checkpoint /path/to/resume.sqlite3` to choose another checkpoint file.
 Use `--no-checkpoint` to force fresh analysis without reading or updating the
