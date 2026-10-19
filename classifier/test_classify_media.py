@@ -84,7 +84,7 @@ class CategoryTaggerTests(unittest.TestCase):
         output = io.StringIO()
         results = results if results is not None else [{"tags": ["trees"], "reason": "Trees"}]
         with patch("classify_media.previews", return_value=["preview"]), patch("classify_media.infer", side_effect=results), contextlib.redirect_stdout(output):
-            code = cli.main(["--db", str(self.db_path), "--tags", str(self.tag_path), "--model", "vision:test", *extra])
+            code = cli.main(["--db", str(self.db_path), "--tags", str(self.tag_path), "--model", "vision:test", "--quiet", *extra])
         return code, [json.loads(line) for line in output.getvalue().splitlines()]
 
     def test_cli_category_report_and_apply(self):
@@ -135,6 +135,112 @@ class CategoryTaggerTests(unittest.TestCase):
     def test_even_media_sampling(self):
         self.assertEqual(cli.sample_media(list(range(10)), 3), [0, 4, 9])
         self.assertEqual(cli.sample_media(list(range(10)), 0), list(range(10)))
+
+    def saved_preview(self, legacy=False):
+        _, records = self.run_cli(["--source-category", "Nature"])
+        if legacy:
+            for entry in records[0]["evidence"]:
+                entry.pop("snapshot")
+                entry.pop("identity")
+        path = self.root / "preview.jsonl"
+        path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+        return path
+
+    def replay(self, path, extra=()):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch("classify_media.infer", side_effect=AssertionError("LLM must not run")), patch("classify_media.previews", side_effect=AssertionError("Frames must not run")), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = cli.main(["--db", str(self.db_path), "--apply-report", str(path), *extra])
+        return code, output.getvalue(), errors.getvalue()
+
+    def test_apply_saved_preview_without_model_merges_latest_and_is_idempotent(self):
+        path = self.saved_preview()
+        self.db.execute("UPDATE categories SET tags='[\"Concurrent\",\"Art, Music\"]' WHERE id=1")
+        self.db.commit()
+        code, progress, raw = self.replay(path)
+        self.assertEqual(code, 0)
+        self.assertIn("no LLM calls", progress)
+        self.assertIn("[1/1]", progress)
+        self.assertIn('Proposed tags for \'Nature\': ["trees"]', progress)
+        record = json.loads(raw)
+        self.assertEqual(record["added_tags"], ["trees"])
+        self.assertEqual(self.stored(), ["Concurrent", "Art, Music", "trees"])
+        self.assertEqual(dict(self.db.execute("SELECT * FROM videos").fetchone()), dict(self.item))
+        self.assertEqual(self.replay(path)[0], 0)
+        self.assertEqual(self.stored(), ["Concurrent", "Art, Music", "trees"])
+
+    def test_old_preview_remains_usable(self):
+        path = self.saved_preview(legacy=True)
+        code, progress, _ = self.replay(path)
+        self.assertEqual(code, 0)
+        self.assertIn("Older report", progress)
+        self.assertEqual(self.stored(), ["Existing", "Art, Music", "trees"])
+
+    def test_saved_preview_rejects_changed_media(self):
+        path = self.saved_preview()
+        self.path.write_bytes(b"changed")
+        code, _, raw = self.replay(path)
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(raw)["applied"])
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_saved_preview_rejects_renamed_category(self):
+        path = self.saved_preview()
+        self.db.execute("UPDATE categories SET name='Renamed' WHERE id=1")
+        self.db.commit()
+        self.assertEqual(self.replay(path)[0], 1)
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_report_fully_validated_before_any_writes(self):
+        path = self.saved_preview()
+        valid = path.read_text()
+        for invalid in ('{bad json}', valid.strip(), '{"category_id":2,"category":"Empty","suggested_tags":[null]}'):
+            path.write_text(valid + invalid + "\n")
+            code, _, error = self.replay(path)
+            self.assertEqual(code, 1)
+            self.assertIn("Report line 2", error)
+            self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_saved_preview_with_errors_is_skipped(self):
+        path = self.saved_preview()
+        record = json.loads(path.read_text())
+        record["errors"] = [{"error": "offline"}]
+        path.write_text(json.dumps(record) + "\n")
+        code, _, raw = self.replay(path)
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(raw)["applied"])
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_cannot_overwrite_input_report(self):
+        path = self.saved_preview()
+        before = path.read_bytes()
+        self.assertEqual(self.replay(path, ["--report", str(path)])[0], 1)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_inference_progress_stdout_and_valid_jsonl_report(self):
+        output, errors = io.StringIO(), io.StringIO()
+        report = self.root / "progress-preview.jsonl"
+        with patch("classify_media.previews", return_value=["preview"]), patch("classify_media.infer", return_value={"tags": ["trees"], "reason": "Trees"}), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = cli.main(["--db", str(self.db_path), "--tags", str(self.tag_path), "--model", "vision:test", "--report", str(report)])
+        self.assertEqual(code, 0)
+        self.assertIn("[1/2] Category 'Nature'", output.getvalue())
+        self.assertIn("Media 1: extracting previews", output.getvalue())
+        self.assertIn("waiting for Ollama", output.getvalue())
+        self.assertIn("Finished", output.getvalue())
+        self.assertIn('Proposed tags for \'Nature\': ["trees"]', output.getvalue())
+        self.assertIn("Proposed tags for 'Empty': []", output.getvalue())
+        self.assertEqual(errors.getvalue(), "")
+        records = [json.loads(line) for line in report.read_text().splitlines()]
+        self.assertEqual(len(records), 2)
+        self.assertIn("snapshot", records[0]["evidence"][0])
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
+
+    def test_optional_tag_list_restricts_saved_suggestions(self):
+        path = self.saved_preview()
+        labels = self.root / "restricted.json"
+        labels.write_text('["other"]')
+        self.assertEqual(self.replay(path, ["--tags", str(labels)])[0], 1)
+        self.assertEqual(self.stored(), ["Existing", "Art, Music"])
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_real_image_and_short_video_previews(self):

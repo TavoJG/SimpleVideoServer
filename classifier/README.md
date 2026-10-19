@@ -163,7 +163,68 @@ python3 classifier/classify_media.py \
   --report /tmp/category-tags-applied.jsonl
 ```
 
-`--tags` is required. Repeat `--source-category Forests` to target specific
+### Apply a Reviewed Preview Without Running Ollama Again
+
+Keep the JSONL preview file from `--report`. After reviewing it, stop the web
+app and apply the saved suggestions directly:
+
+```sh
+python3 classifier/classify_media.py \
+  --db /srv/video_server/videos.sqlite3 \
+  --apply-report /tmp/category-tags-preview.jsonl \
+  --report /tmp/category-tags-applied.jsonl
+```
+
+Restart the web app afterward. This mode makes no Ollama calls and extracts no
+frames. It does not require `--model`, `--tags`, or a running Ollama server.
+Optionally supply `--tags /path/to/tags.json` to enforce a current allowed list.
+`--apply-report` applies changes directly; do not combine it with `--apply`.
+
+All report records are validated before any database writes. Each category's ID
+and name must still match. Suggestions are merged with the latest stored tags,
+never the preview's old tag list, so later additions are preserved. Reapplying
+the same preview does not duplicate tags. Only `suggested_tags` are applied;
+`tags` and `added_tags` in the preview are informational.
+
+New previews include the sampled media's database snapshots and file identity.
+Changed, moved, deleted or missing evidence prevents applying that category.
+Older category previews without snapshots are also accepted: current media
+membership is checked, but original file content cannot be verified. Progress
+prints a notice for these older reports.
+
+Records with preview errors or a `skipped` status are skipped. Successful
+categories can still be applied when another category fails. Errors produce
+exit code 1. To exclude a category, remove its entire JSONL record from a copy of
+the preview; to approve fewer tags, edit its `suggested_tags` list. Duplicate
+category records and malformed JSON are rejected. Keep input and output report
+paths different so the original preview remains available.
+
+### Progress and Output
+
+Progress is printed immediately to **stdout**: category position, sampled-media
+position, preview extraction, waiting for Ollama, tag counts, errors and a final
+summary. Each completed category prints its full proposed tag list, for example
+`Proposed tags for 'Nature': ["forest", "mountain"]`. An empty list is printed as
+`[]`. Saved-report application also prints progress and proposed tags for each
+category; its applied/skipped/failed message identifies whether they were saved.
+
+Use `--report /path/to/results.jsonl` to save valid JSONL separately from the
+progress text. Without `--report`, JSONL results go to stderr. `--quiet` disables
+progress and restores JSONL on stdout when no report file is specified, for
+example:
+
+```sh
+python3 classifier/classify_media.py \
+  --db /srv/video_server/videos.sqlite3 \
+  --apply-report /tmp/category-tags-preview.jsonl --quiet \
+  > /tmp/category-tags-applied.jsonl
+```
+
+Do not redirect output to the input preview file: the shell truncates redirected
+files before the script starts. Prefer separate `--report` paths, which the
+script checks before opening.
+
+`--tags` is required for inference. Repeat `--source-category Forests` to target specific
 categories, including `Uncategorized` for the root. `--limit N` limits the number
 of categories, ordered by category ID. By default, up to eight media items per
 category are sampled evenly across media IDs. Use `--media-limit N` to change
@@ -171,6 +232,9 @@ that count or `--media-limit 0` to inspect all indexed media in each category.
 This sampling is deterministic, not random; use all media for broader coverage.
 Missing media is excluded, stale metadata is rejected, and empty categories are
 skipped. Re-running the script adds only newly suggested tags.
+
+`--source-category` and `--limit` select inference categories and cannot be used
+with `--apply-report`; saved-report mode uses the categories in the file.
 
 Category assignment remains a manual app operation.
 
@@ -189,9 +253,11 @@ untouched.
 
 Results are JSONL, one record per category: category ID/name, existing tags,
 suggested tags, added tags, merged tags, evidence per sampled media ID, applied
-status and errors. In preview mode, `added_tags` means proposed additions.
+status and errors. Evidence includes snapshots for later application checks.
+In preview mode, `added_tags` means proposed additions.
 Successful samples can contribute tags even if another sample fails; errors are
-reported and produce exit code 1. If all samples fail, nothing is applied.
+reported and produce exit code 1 during inference. If all samples fail, nothing
+is applied. Saved-report mode skips categories whose preview contains errors.
 Changed/deleted categories or changed evidence prevent application for that
 category. Exit codes: 0 success, 1 errors, 2 invalid arguments, 130 interrupted.
 Database writes are transactional; the filesystem is never modified.

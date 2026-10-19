@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.request
 
 
@@ -144,10 +145,97 @@ def sample_media(items, limit):
     return [items[round(i * (len(items) - 1) / (limit - 1))] for i in range(limit)]
 
 
+def load_report(path, allowed=None):
+    records, seen = [], set()
+    with path.open() as source:
+        for number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("Expected a category object")
+                category_id, name = record.get("category_id"), record.get("category")
+                if type(category_id) is not int or category_id <= 0 or not isinstance(name, str) or not name.strip():
+                    raise ValueError("Missing category ID/name")
+                if category_id in seen:
+                    raise ValueError("Duplicate category ID")
+                suggested = record.get("suggested_tags")
+                if not isinstance(suggested, list) or len(suggested) > 1000:
+                    raise ValueError("Missing or invalid suggested_tags")
+                for tag in suggested:
+                    if not isinstance(tag, str) or not tag.strip() or tag != tag.strip() or len(tag) > 200 or "\0" in tag:
+                        raise ValueError("Invalid suggested tag")
+                    if allowed is not None and tag not in allowed:
+                        raise ValueError("Suggested tag is outside the allowed list")
+                if not isinstance(record.get("errors", []), list) or not isinstance(record.get("evidence", []), list):
+                    raise ValueError("Invalid errors/evidence")
+                for evidence in record.get("evidence", []):
+                    if not isinstance(evidence, dict) or type(evidence.get("media_id")) is not int:
+                        raise ValueError("Invalid evidence media ID")
+                    if "snapshot" in evidence or "identity" in evidence:
+                        snapshot, stamp = evidence.get("snapshot"), evidence.get("identity")
+                        if not isinstance(snapshot, dict) or snapshot.get("id") != evidence["media_id"] or snapshot.get("category") != name:
+                            raise ValueError("Invalid media snapshot")
+                        if not isinstance(stamp, list) or len(stamp) != 4 or any(type(value) is not int for value in stamp):
+                            raise ValueError("Invalid media identity")
+                if suggested and not record.get("evidence"):
+                    raise ValueError("Suggestions have no media evidence")
+                seen.add(category_id)
+                records.append(record)
+            except (ValueError, TypeError) as error:
+                raise ValueError(f"Report line {number}: {error}") from error
+    if not records:
+        raise ValueError("Report contains no category records")
+    return records
+
+
+def apply_saved_report(db, records, output, progress):
+    failures, applied = 0, 0
+    for index, saved in enumerate(records, 1):
+        name = saved["category"]
+        progress(f"[{index}/{len(records)}] Applying saved suggestions for {name!r}")
+        record = {**saved, "applied": False, "added_tags": [], "errors": []}
+        if saved.get("errors") or saved.get("skipped"):
+            record["skipped"] = "Preview had errors or no usable media"
+            record["errors"] = saved.get("errors", [])
+            failures += bool(record["errors"])
+            progress(f"  Skipped: {record['skipped']}")
+        else:
+            try:
+                evidence = []
+                legacy = False
+                for entry in saved.get("evidence", []):
+                    if "snapshot" in entry:
+                        evidence.append((entry["snapshot"], tuple(entry["identity"])))
+                    else:
+                        # Older reports lack file snapshots; verify membership now.
+                        item = db.execute("SELECT * FROM videos WHERE id=?", (entry["media_id"],)).fetchone()
+                        if item is None or item["category"] != name or item["missing"]:
+                            raise ValueError("Report media no longer belongs to this category")
+                        evidence.append((item, identity(item["path"])))
+                        legacy = True
+                if legacy:
+                    progress("  Older report: checking current media membership; original file content cannot be verified")
+                category = {"id": saved["category_id"], "name": name}
+                record["tags"], record["added_tags"] = apply_result(db, category, evidence, saved["suggested_tags"])
+                record["applied"] = True
+                applied += 1
+                progress(f"  Applied: {len(record['added_tags'])} new tag(s)")
+            except (OSError, ValueError, KeyError, sqlite3.Error) as error:
+                record["errors"] = [{"error": str(error)}]
+                failures += 1
+                progress(f"  Failed: {error}")
+        progress(f"  Proposed tags for {name!r}: {json.dumps(record['suggested_tags'], ensure_ascii=False)}")
+        print(json.dumps(record), file=output, flush=True)
+    progress(f"Finished: {applied} categories applied; {failures} with errors")
+    return 1 if failures else 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=os.getenv("VIDEO_DB", "videos.sqlite3"))
-    parser.add_argument("--tags", required=True, help="JSON array of allowed category tags")
+    parser.add_argument("--tags", help="JSON array of allowed category tags (required for inference)")
     parser.add_argument("--model", default=os.getenv("CLASSIFIER_MODEL"))
     parser.add_argument("--ollama-url", default=os.getenv("OLLAMA_URL", "http://127.0.0.1:11434"))
     parser.add_argument("--timeout", type=float, default=180)
@@ -155,20 +243,30 @@ def main(argv=None):
     parser.add_argument("--source-category", action="append", help="Only this category; repeatable")
     parser.add_argument("--limit", type=int, help="Maximum number of categories")
     parser.add_argument("--media-limit", type=int, default=8, help="Media sampled per category; 0 means all (default: 8)")
-    parser.add_argument("--apply", action="store_true", help="Add suggested tags to categories; never remove tags or edit media")
-    parser.add_argument("--report", type=Path, help="Write category JSONL here instead of stdout")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="Analyze and add suggested tags to categories")
+    mode.add_argument("--apply-report", type=Path, help="Apply saved JSONL suggestions without Ollama or frame extraction")
+    parser.add_argument("--report", type=Path, help="Write result JSONL here (otherwise stderr, or stdout with --quiet)")
+    parser.add_argument("--quiet", action="store_true", help="Suppress stdout progress; results use stdout unless --report is set")
     args = parser.parse_args(argv)
-    if not args.model:
-        parser.error("Supply --model or CLASSIFIER_MODEL")
+    if not args.apply_report and (not args.model or not args.tags):
+        parser.error("Supply --tags and --model or CLASSIFIER_MODEL for inference")
+    if args.apply_report and (args.source_category or args.limit):
+        parser.error("--apply-report applies the saved categories; omit --source-category and --limit")
     if not math.isfinite(args.timeout) or args.timeout <= 0 or args.media_limit < 0 or (args.limit is not None and args.limit <= 0):
         parser.error("Timeout/limit must be positive and media-limit nonnegative")
     try:
-        tags = load_labels(args.tags)
+        started = time.monotonic()
+        def progress(message):
+            if not args.quiet:
+                print(message, flush=True)
+        tags = load_labels(args.tags) if args.tags else None
+        saved_records = load_report(args.apply_report, tags) if args.apply_report else None
         db_path = Path(args.db).resolve(strict=True)
         with ExitStack() as stack:
             lock = stack.enter_context(open(str(db_path) + ".classifier.lock", "a"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            db = sqlite3.connect(db_path.as_uri() + ("?mode=rw" if args.apply else "?mode=ro"), uri=True, timeout=30)
+            db = sqlite3.connect(db_path.as_uri() + ("?mode=rw" if args.apply or args.apply_report else "?mode=ro"), uri=True, timeout=30)
             stack.callback(db.close)
             db.row_factory = sqlite3.Row
             if "tags" not in {column[1] for column in db.execute("PRAGMA table_info(categories)")}:
@@ -186,34 +284,47 @@ def main(argv=None):
                 if any(name.casefold() not in found for name in args.source_category):
                     raise ValueError("Requested source category not found")
             if args.report:
-                protected = {db_path, Path(args.tags).resolve(), Path(str(db_path) + ".classifier.lock")}
+                protected = {db_path, Path(str(db_path) + ".classifier.lock"), Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")}
+                protected.update(Path(p).resolve() for p in (args.tags, args.apply_report) if p)
                 protected.update(Path(row[0]).resolve() for row in db.execute("SELECT path FROM videos"))
                 if args.report.resolve() in protected:
                     raise ValueError("Report must not overwrite the database, tags, lock file, or media")
                 report = stack.enter_context(args.report.open("w"))
             else:
-                report = sys.stdout
+                report = sys.stdout if args.quiet else sys.stderr
+            if saved_records is not None:
+                progress(f"Applying {len(saved_records)} saved categories; no LLM calls")
+                return apply_saved_report(db, saved_records, report, progress)
+            progress(f"{'Applying' if args.apply else 'Previewing'} tags for {len(categories)} categories")
             failures = 0
-            for category in categories:
+            for category_index, category in enumerate(categories, 1):
+                progress(f"[{category_index}/{len(categories)}] Category {category['name']!r}")
                 existing = read_tags(category["tags"])
                 record = {"category_id": category["id"], "category": category["name"], "existing_tags": existing,
                           "suggested_tags": [], "added_tags": [], "tags": existing, "applied": False, "evidence": [], "errors": []}
                 evidence, suggested = [], []
                 items = db.execute("SELECT * FROM videos WHERE category=? COLLATE NOCASE AND missing=0 ORDER BY id", (category["name"],)).fetchall()
-                for item in sample_media(items, args.media_limit):
+                selected = sample_media(items, args.media_limit)
+                progress(f"  Sampling {len(selected)} of {len(items)} media item(s)")
+                for item_index, item in enumerate(selected, 1):
                     try:
+                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: extracting previews")
                         stamp = identity(item["path"])
                         if Path(item["path"]).is_symlink() or not Path(item["path"]).is_file():
                             raise ValueError("Media must be a regular file")
                         if stamp[2] != item["size_bytes"] or abs(stamp[3] / 1e9 - item["mtime"]) > 0.000001:
                             raise ValueError("Database metadata is stale; scan the library first")
-                        result = infer(previews(item, args.frames, args.timeout), tags, args.model,
+                        images = previews(item, args.frames, args.timeout)
+                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: waiting for Ollama")
+                        result = infer(images, tags, args.model,
                                        args.ollama_url, args.timeout, os.getenv("OLLAMA_TOKEN"))
                         suggested, _ = merge_tags(suggested, result["tags"])
                         evidence.append((item, stamp))
-                        record["evidence"].append({"media_id": item["id"], **result})
+                        record["evidence"].append({"media_id": item["id"], **result, "snapshot": dict(item), "identity": list(stamp)})
+                        progress(f"  [{item_index}/{len(selected)}] Media {item['id']}: {len(result['tags'])} suggested tag(s)")
                     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
                         record["errors"].append({"media_id": item["id"], "error": str(error)})
+                        progress(f"  Media {item['id']} failed: {error}")
                 record["suggested_tags"] = suggested
                 record["tags"], record["added_tags"] = merge_tags(existing, suggested)
                 if args.apply and evidence:
@@ -227,6 +338,9 @@ def main(argv=None):
                     record["skipped"] = "No active indexed media"
                 failures += bool(record["errors"])
                 print(json.dumps(record), file=report, flush=True)
+                progress(f"  {'Applied' if record['applied'] else 'Previewed'}: {len(record['added_tags'])} new tag(s); {len(record['errors'])} error(s)")
+                progress(f"  Proposed tags for {category['name']!r}: {json.dumps(record['suggested_tags'], ensure_ascii=False)}")
+            progress(f"Finished {len(categories)} categories in {time.monotonic() - started:.1f}s; {failures} with errors")
             return 1 if failures else 0
     except (OSError, ValueError, sqlite3.Error) as error:
         print(str(error), file=sys.stderr)
