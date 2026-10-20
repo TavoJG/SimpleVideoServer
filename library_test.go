@@ -164,3 +164,61 @@ func TestDeletionRejectsSymlinksAndDeletesMissingRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCategoryMediaCounts(t *testing.T) {
+	s := libraryFixture(t)
+	for _, name := range []string{"Travel/movie.mp4", "Videos/only.mp4", "loose.jpg"} {
+		path := filepath.Join(s.defaultVideoRoot, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("media"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.scanFolder(s.defaultVideoRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(s.defaultVideoRoot, "Empty"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	check := func(name string, images, videos int) {
+		t.Helper()
+		response := libraryCall(t, s, "GET", "/api/categories", nil)
+		if response.Code != 200 {
+			t.Fatal(response.Body.String())
+		}
+		var summaries []categorySummary
+		if err := json.Unmarshal(response.Body.Bytes(), &summaries); err != nil {
+			t.Fatal(err)
+		}
+		for _, summary := range summaries {
+			if summary.Name == name {
+				if summary.ImageCount != images || summary.VideoCount != videos || summary.Count != images+videos || summary.DirectCount != images+videos {
+					t.Fatalf("unexpected counts: %+v", summary)
+				}
+				return
+			}
+		}
+		t.Fatalf("category %s not found", name)
+	}
+	check("Travel", 1, 1)
+	check("Hikes", 1, 0)
+	check("Videos", 0, 1)
+	check("Empty", 0, 0)
+	check("Uncategorized", 1, 0)
+	check("Private", 1, 0)
+	if _, err := s.db.Exec("UPDATE videos SET missing=1 WHERE filename='movie.mp4'"); err != nil {
+		t.Fatal(err)
+	}
+	check("Travel", 1, 0)
+	if _, err := s.db.Exec("UPDATE videos SET category='Travel' WHERE filename='hike.jpg'"); err != nil {
+		t.Fatal(err)
+	}
+	check("Travel", 2, 0)
+	check("Hikes", 0, 0)
+	if _, err := s.db.Exec("DELETE FROM videos WHERE filename='clip.jpg'"); err != nil {
+		t.Fatal(err)
+	}
+	check("Travel", 1, 0)
+}

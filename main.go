@@ -76,6 +76,8 @@ type categorySummary struct {
 	Tags        []string `json:"tags"`
 	Name        string   `json:"name"`
 	Count       int      `json:"count"`
+	ImageCount  int      `json:"image_count"`
+	VideoCount  int      `json:"video_count"`
 	DirectCount int      `json:"direct_count"`
 	Locked      bool     `json:"locked"`
 	Unlocked    bool     `json:"unlocked"`
@@ -510,21 +512,23 @@ func (s *server) queryCategories() ([]categorySummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query("SELECT category,COUNT(*) FROM videos WHERE missing=0 GROUP BY category")
+	rows, err := s.db.Query("SELECT category,COUNT(*),SUM(CASE WHEN media_type='image' THEN 1 ELSE 0 END),SUM(CASE WHEN media_type='video' THEN 1 ELSE 0 END) FROM videos WHERE missing=0 GROUP BY category")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cat string
-		var count int
-		if err := rows.Scan(&cat, &count); err != nil {
+		var count, images, videos int
+		if err := rows.Scan(&cat, &count, &images, &videos); err != nil {
 			return nil, err
 		}
 		item := summaries[cat]
 		if item == nil {
 			continue
 		}
+		item.ImageCount += images
+		item.VideoCount += videos
 		item.Count += count
 		item.DirectCount += count
 	}

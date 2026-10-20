@@ -599,3 +599,61 @@ describe('main-page shuffle', () => {
     expect(wrapper.text()).toContain('No unlocked videos available.');
   });
 });
+
+describe('Category covers and counters', () => {
+  it('excludes missing and unsupported media, shows zero counts, and clears covers on logout', async () => {
+    await openApp('/');
+    await wrapper.setData({ videos: [
+      { id: 10, category: 'Travel', media_type: 'image', thumbnail_url: '/thumb/10', missing: true },
+      { id: 11, category: 'Travel', media_type: 'audio', thumbnail_url: '/thumb/11' },
+      { id: 12, category: 'Travel', media_type: 'video', thumbnail_url: '/thumb/12' },
+    ] });
+    expect(wrapper.vm.categoryCovers.Travel.id).toBe(12);
+    expect(wrapper.find('[data-category="Hikes"]').text()).toContain('0 images · 0 videos');
+    expect(wrapper.find('[data-category="Hikes"] img').exists()).toBe(false);
+    vi.spyOn(wrapper.vm, 'api').mockResolvedValue({});
+    await wrapper.vm.logout();
+    await flushPromises();
+    expect(wrapper.vm.categoryCovers).toEqual({});
+    expect(wrapper.vm.failedCategoryCovers).toEqual({});
+  });
+
+  it('shows separate counts and keeps covers stable through filters and refreshes', async () => {
+    await openApp('/');
+    vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    await wrapper.setData({
+      categorySummariesData: categories.map(category => ({ ...category, image_count: 1, video_count: category.name === 'Travel' ? 1 : 0 })),
+      videos: videos.map(item => ({ ...item, thumbnail_url: `/thumb/${item.id}` })),
+    });
+    const tile = wrapper.find('[data-category="Travel"]');
+    expect(tile.text()).toContain('1 image · 1 video');
+    expect(tile.find('img').attributes('src')).toBe('/thumb/4');
+    expect(wrapper.find('[data-category="Private"] img').exists()).toBe(false);
+    const cover = wrapper.vm.categoryCovers.Travel.id;
+    await wrapper.find('#search').setValue('Travel');
+    await wrapper.setData({ videos: wrapper.vm.videos.map(item => ({ ...item })) });
+    expect(wrapper.vm.categoryCovers.Travel.id).toBe(cover);
+    expect(tile.text()).toContain('1 image · 1 video');
+    await wrapper.find('[data-category="Travel"] img').trigger('error');
+    expect(wrapper.find('[data-category="Travel"] img').exists()).toBe(false);
+    expect(wrapper.find('[data-category="Travel"]').text()).toContain('No preview');
+  });
+
+  it('replaces moved or deleted covers and clears locked covers', async () => {
+    await openApp('/');
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    await wrapper.setData({ videos: videos.map(item => ({ ...item, thumbnail_url: `/thumb/${item.id}` })) });
+    expect(wrapper.vm.categoryCovers.Travel.id).toBe(1);
+    wrapper.vm.videos.find(item => item.id === 1).category = 'Hikes';
+    await wrapper.vm.$nextTick();
+    expect(wrapper.vm.categoryCovers.Travel.id).toBe(4);
+    await wrapper.setData({ videos: wrapper.vm.videos.filter(item => item.id !== 4) });
+    expect(wrapper.vm.categoryCovers.Travel).toBeUndefined();
+    wrapper.vm.categorySummariesData.find(item => item.name === 'Private').unlocked = true;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.vm.categoryCovers.Private.id).toBe(3);
+    wrapper.vm.categorySummariesData.find(item => item.name === 'Private').unlocked = false;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.vm.categoryCovers.Private).toBeUndefined();
+  });
+});

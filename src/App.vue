@@ -109,8 +109,14 @@
               :class="{ active: selectedCategory === category.name }"
             >
               <button class="category-tile" type="button" :data-category="category.name" :aria-current="selectedCategory === category.name ? 'true' : undefined" @click="selectCategory(category.name)">
-                <span>{{ category.name }}</span>
-                <strong>{{ category.count }}</strong>
+                <span class="category-cover" aria-hidden="true">
+                  <img v-if="categoryCovers[category.name] && !failedCategoryCovers[categoryCovers[category.name].thumbnail_url] && (!category.locked || category.unlocked)"
+                    class="category-cover-image" :src="categoryCovers[category.name].thumbnail_url" alt="" loading="lazy" decoding="async" width="320" height="180"
+                    @error="failedCategoryCovers[$event.target.getAttribute('src')] = true" />
+                  <span v-else class="category-cover-placeholder">{{ category.locked && !category.unlocked ? 'Locked' : 'No preview' }}</span>
+                </span>
+                <span class="category-name">{{ category.name }}</span>
+                <span class="category-counts">{{ category.image_count || 0 }} {{ category.image_count === 1 ? 'image' : 'images' }} · {{ category.video_count || 0 }} {{ category.video_count === 1 ? 'video' : 'videos' }}</span>
                 <span v-if="!category.locked || category.unlocked" class="category-tag-badges"><span v-for="tag in category.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></span>
                 <span v-if="category.locked" class="lock-indicator">
                   {{ category.unlocked ? "Unlocked" : "Locked" }}
@@ -521,6 +527,8 @@ export default {
       retryPayload: null,
       actionLabels: { move: 'Move', favorited: 'Favorite', watch_later: 'Watch Later', rename: 'Rename', delete: 'Delete permanently' },
       categorySummariesData: [],
+      categoryCovers: {},
+      failedCategoryCovers: {},
       categoryTagsDialog: null,
       categoryTagsDraft: '',
       categoryTagsError: '',
@@ -723,6 +731,8 @@ export default {
     },
   },
   watch: {
+    videos: { deep: true, handler() { this.syncCategoryCovers(); } },
+    categorySummariesData: { deep: true, handler() { this.syncCategoryCovers(); } },
     compactMode(value) { try { localStorage.setItem('video-library-compact', String(value)); } catch { /* Browsing remains available without storage. */ } },
     selectionContext() { this.clearSelection(); this.resetShuffle(); },
     shuffleMembership() { this.resetShuffle(); },
@@ -822,6 +832,24 @@ export default {
       this.mappingsLoaded = true;
     },
 
+    syncCategoryCovers() {
+      const covers = {};
+      const grouped = new Map();
+      for (const item of this.videos) {
+        if (item.missing || !['image', 'video'].includes(item.media_type) || !item.thumbnail_url) continue;
+        const name = item.category || 'Uncategorized';
+        if (!grouped.has(name)) grouped.set(name, []);
+        grouped.get(name).push(item);
+      }
+      for (const category of this.categorySummariesData) {
+        if (category.locked && !category.unlocked) continue;
+        const candidates = grouped.get(category.name) || [];
+        const previous = this.categoryCovers[category.name];
+        const cover = candidates.find(item => item.id === previous?.id) || candidates[Math.floor(Math.random() * candidates.length)];
+        if (cover) covers[category.name] = { id: cover.id, thumbnail_url: cover.thumbnail_url };
+      }
+      this.categoryCovers = covers;
+    },
     canAccessVideo(video) {
       const category = this.categorySummaries.find(item => item.name === (video.category || 'Uncategorized'));
       return !category?.locked || category.unlocked;
@@ -1012,6 +1040,8 @@ export default {
     async logout() {
       await this.api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
       this.authenticated = false;
+      this.categoryCovers = {};
+      this.failedCategoryCovers = {};
       this.clearSelection();
       this.powerFailures = [];
       this.retryPayload = null;
@@ -1348,6 +1378,9 @@ export default {
       this.categoryUnlocking = true; this.categoryUnlockMessage = '';
       try {
         await this.api('/api/categories/lock', { method: 'POST', body: JSON.stringify({ category: this.selectedCategory }) });
+        delete this.categoryCovers[this.selectedCategory];
+        const category = this.categorySummariesData.find(item => item.name === this.selectedCategory);
+        if (category) category.unlocked = false;
         await this.loadLibrary(); this.selected = null;
         if (this.$route.name === 'media') this.$router.push({ name: 'category', params: { category: this.selectedCategory }, query: this.$route.query });
         this.showBanner('Category locked.');
