@@ -79,6 +79,7 @@ type categorySummary struct {
 	ImageCount  int      `json:"image_count"`
 	VideoCount  int      `json:"video_count"`
 	DirectCount int      `json:"direct_count"`
+	Hidden      bool     `json:"hidden"`
 	Locked      bool     `json:"locked"`
 	Unlocked    bool     `json:"unlocked"`
 }
@@ -170,6 +171,9 @@ func main() {
 	if err := srv.loadCategoryAliases(); err != nil {
 		log.Fatal(err)
 	}
+	if err := srv.importCategoryProtection(); err != nil {
+		log.Fatal(err)
+	}
 	if err := checkLibraryStartup(db, srv.defaultVideoRoot); err != nil {
 		log.Fatal(err)
 	}
@@ -210,6 +214,9 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/category-migrations", s.authRequired(http.HandlerFunc(s.categoryMigrationMappings)))
 	mux.Handle("PATCH /api/categories/tags", s.authRequired(http.HandlerFunc(s.updateCategoryTags)))
 	mux.Handle("GET /api/categories", s.authRequired(http.HandlerFunc(s.listCategories)))
+	for _, action := range []string{"hide", "password", "unhide"} {
+		mux.Handle("POST /api/categories/"+action, s.authRequired(http.HandlerFunc(s.manageCategoryProtection)))
+	}
 	mux.Handle("POST /api/categories/unlock", s.authRequired(http.HandlerFunc(s.unlockCategory)))
 	mux.Handle("POST /api/categories/lock", s.authRequired(http.HandlerFunc(s.lockCategory)))
 	mux.Handle("GET /api/videos", s.authRequired(http.HandlerFunc(s.listVideos)))
@@ -265,6 +272,7 @@ func initDB(db *sql.DB) error { return initDatabase(db, false) }
 func initDatabase(db *sql.DB, migrating bool) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS category_tag_seeds(root TEXT NOT NULL,parent TEXT NOT NULL,subcategory TEXT NOT NULL,PRIMARY KEY(root,parent,subcategory))`,
+		`CREATE TABLE IF NOT EXISTS category_protection (category TEXT PRIMARY KEY COLLATE NOCASE, credential TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY)`,
 		`CREATE TABLE IF NOT EXISTS category_migrations (root TEXT NOT NULL,parent TEXT NOT NULL,subcategory TEXT NOT NULL,target TEXT NOT NULL,done INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(root,parent,subcategory))`,
 		`CREATE TABLE IF NOT EXISTS category_lock_aliases (category TEXT PRIMARY KEY COLLATE NOCASE,parent TEXT NOT NULL)`,
@@ -297,6 +305,8 @@ func initDatabase(db *sql.DB, migrating bool) error {
 		`CREATE INDEX IF NOT EXISTS idx_videos_missing ON videos(missing)`,
 		`CREATE INDEX IF NOT EXISTS idx_videos_title ON videos(title)`,
 		`CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name COLLATE NOCASE)`,
+		`CREATE TRIGGER IF NOT EXISTS protection_rename AFTER UPDATE OF name ON categories BEGIN UPDATE category_protection SET category=NEW.name WHERE category=OLD.name; END`,
+		`CREATE TRIGGER IF NOT EXISTS protection_delete AFTER DELETE ON categories BEGIN DELETE FROM category_protection WHERE category=OLD.name; END`,
 	}
 
 	for _, statement := range statements {
@@ -606,6 +616,11 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
+	for _, cookie := range r.Cookies() {
+		if strings.HasPrefix(cookie.Name, "video_server_lock_") {
+			http.SetCookie(w, &http.Cookie{Name: cookie.Name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		}
+	}
 	for category := range s.lockedCategories {
 		http.SetCookie(w, &http.Cookie{
 			Name:     s.categoryCookieName(category),
@@ -701,6 +716,7 @@ func (s *server) listCategories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range categories {
+		categories[index].Hidden = s.isCategoryLocked(categories[index].Name)
 		categories[index].Locked = s.isCategoryLocked(categories[index].Name)
 		categories[index].Unlocked = s.canAccessCategory(r, categories[index].Name)
 		if !categories[index].Unlocked {
@@ -1034,6 +1050,24 @@ func parseLockedCategories(raw string) map[string]string {
 
 func (s *server) isCategoryLocked(category string) bool { return s.categoryPassword(category) != "" }
 func (s *server) categoryPassword(category string) string {
+	if s.db != nil {
+		var credential string
+		err := s.db.QueryRow("SELECT credential FROM category_protection WHERE category=?", category).Scan(&credential)
+		if err == nil {
+			return credential
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "!unavailable"
+		}
+		var imported int
+		err = s.db.QueryRow("SELECT COUNT(*) FROM schema_versions WHERE name='category_protection_v1'").Scan(&imported)
+		if err != nil {
+			return "!unavailable"
+		}
+		if imported > 0 {
+			return ""
+		}
+	}
 	key := categoryKey(category)
 	if password := s.lockedCategories[key]; password != "" {
 		return password
@@ -1068,6 +1102,9 @@ func (s *server) categoryToken(category string) string {
 }
 
 func (s *server) canAccessCategory(r *http.Request, category string) bool {
+	if s.categoryPassword(category) == "!unavailable" {
+		return false
+	}
 	if !s.isCategoryLocked(category) {
 		return true
 	}
@@ -1102,7 +1139,7 @@ func (s *server) unlockCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Category is not locked.")
 		return
 	}
-	if !constantStringEqual(req.Password, password) {
+	if !verifyCategoryPassword(req.Password, password) {
 		writeError(w, http.StatusUnauthorized, "Invalid category password.")
 		return
 	}

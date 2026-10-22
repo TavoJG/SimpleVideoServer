@@ -109,7 +109,7 @@ func TestFlatCategoryLocksAndSymlinks(t *testing.T) {
 	folderFile(t, root, "Trips/clip.mp4")
 	folderScan(t, s, root)
 	s.lockedCategories = parseLockedCategories("Trips=secret")
-	if w := folderCall(s.managedRenameCategory, `{"from":"Trips","to":"Journeys"}`); w.Code != 400 {
+	if w := folderCall(s.managedRenameCategory, `{"from":"Trips","to":"Journeys"}`); w.Code != 403 {
 		t.Fatal("lock not preserved")
 	}
 	s.lockedCategories = nil

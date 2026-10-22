@@ -39,9 +39,11 @@ Set `APP_PASSWORD` to require a password before the library can be used:
 VIDEO_ROOT=/path/to/videos APP_PASSWORD='change-me' go run .
 ```
 
-If `APP_PASSWORD` is unset, password protection is disabled.
+If `APP_PASSWORD` is unset, the main login is disabled; category passwords still apply.
 
-Set `APP_LOCKED_CATEGORIES` to require an extra password for specific categories after the main app login. Use `category=password` pairs separated by semicolons:
+Manage privacy in a category using **Hide category**, **Change password**, and **Unhide category**. Hidden categories appear only in the separate **Hidden categories** area. Unlocking lasts 12 hours; **Lock again** ends access in this browser. Changing a password invalidates existing unlock cookies. Changing passwords and unhiding require the current category password; there is no main-password recovery. Unhiding removes protection.
+
+For legacy installations, `APP_LOCKED_CATEGORIES` supports `category=password` pairs separated by semicolons:
 
 ```bash
 VIDEO_ROOT=/path/to/videos \
@@ -50,7 +52,7 @@ APP_LOCKED_CATEGORIES='private=vault;family=second-secret' \
 go run .
 ```
 
-Locked categories still appear in the category grid, but their media list, thumbnails, and streams stay blocked until the extra category password is entered. Locked category names are environment-driven, so renaming a locked category is intentionally blocked.
+Legacy passwords and inherited category locks are imported once into SQLite as salted PBKDF2-SHA256 hashes. Later web changes take precedence over environment settings, including after restart. Keep the database backed up. Hidden categories can be renamed after unlocking; protection follows the rename. Media lists, thumbnails, streams, and metadata operations require category access.
 
 Install `ffmpeg` if you want generated thumbnails for videos:
 
@@ -91,6 +93,28 @@ Category names can be renamed from the category controls. This renames the backi
 
 ## Library Management
 
+Find exact duplicates regardless of filename with the standalone Python 3 script:
+
+```bash
+python3 scripts/dedupe_media.py /path/to/videos
+python3 scripts/dedupe_media.py /path/to/videos --delete
+```
+
+The default is a preview. `--delete` permanently removes extra copies, keeping the
+first relative path in alphabetical order in each SHA-256 group. Only supported
+media extensions are included. Files are grouped by size before hashing; matching
+contents are detected across filenames, extensions, and categories. Symlinks and
+hidden directories are skipped. The default scope matches the library's root and
+immediate category folders; add `--recursive` to include deeper folders. Omit the
+path to use `VIDEO_ROOT`.
+
+Stop the server and other processes that modify the media folder before deletion.
+The script rechecks contents before removing each copy, but concurrent folder or
+file changes are not supported. It does not edit SQLite or merge metadata: choose
+which paths to retain before running it if titles, favorites, or category placement
+matter. Restart the server or run a library scan afterward to mark deleted paths
+as missing. Reported bytes are logical file sizes; hard links may free no space.
+
 Select media to move files, set Favorites or Watch Later, or permanently delete files. Select all applies to the current filtered list. Sorting preserves selection; changing the folder, view, search, or filters clears it. Bulk operations report individual failures and allow retrying failed items. Moves preserve metadata and choose a suffixed filename when the destination name is occupied.
 
 Compact reduces list spacing and persists in this browser.
@@ -130,7 +154,7 @@ Existing destination names are reserved case-insensitively. Conflicting subcateg
 
 The migration journals destinations before moving folders and commits each folder independently. Re-run `--apply` to resume after interruption or a resolved error. Successful steps are skipped, so rerunning never regenerates edited tags. Normal startup rejects an unmigrated hierarchy with instructions to run this command. Following migration, normal scans clean empty parent folders.
 
-Promoted categories inherit locks from their former parent through stored name aliases; no passwords are stored. Keep the original parent entries in `APP_LOCKED_CATEGORIES`. An explicit lock for a promoted category takes precedence. Original subcategory browser links redirect using the saved migration mapping.
+During the one-time protection import, promoted categories inherit locks from their former parent through stored name aliases. An explicit lock for a promoted category takes precedence. Passwords are stored only as salted hashes. Original subcategory browser links redirect using the saved migration mapping.
 
 Legacy Trash restoration finishes before promotion. Missing legacy Trash files stop the migration with their ID and path.
 

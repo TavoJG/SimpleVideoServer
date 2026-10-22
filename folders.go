@@ -118,10 +118,6 @@ func (s *server) managedRenameCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Choose different managed categories.")
 		return
 	}
-	if s.isCategoryLocked(from) || s.isCategoryLocked(to) {
-		writeError(w, 400, "Locked categories cannot be renamed.")
-		return
-	}
 	if !s.requireCategoryAccess(w, r, from) || !s.requireCategoryAccess(w, r, to) {
 		return
 	}
