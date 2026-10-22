@@ -216,7 +216,7 @@ describe('category tags', () => {
     expect(wrapper.vm.categoryTagSummaries).toEqual([{ name: 'Outdoors', count: 1 }, { name: 'Travel', count: 2 }]);
     await wrapper.find('#category-tag-match').setValue('any');
     await flushPromises();
-    expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Travel', 'Hikes']);
+    expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Hikes', 'Travel']);
     expect(router.currentRoute.value.query.category_match).toBe('any');
     await wrapper.find('#search').setValue('HI');
     expect(wrapper.vm.filteredCategorySummaries.map(category => category.name)).toEqual(['Hikes']);
@@ -655,5 +655,98 @@ describe('Category covers and counters', () => {
     wrapper.vm.categorySummariesData.find(item => item.name === 'Private').unlocked = false;
     await wrapper.vm.$nextTick();
     expect(wrapper.vm.categoryCovers.Private).toBeUndefined();
+  });
+});
+
+describe('Hidden category privacy', () => {
+  it('separates hidden categories from normal tiles even when unlocked', async () => {
+    await openApp('/');
+    const category = wrapper.vm.categorySummariesData.find(item => item.name === 'Private');
+    category.hidden = true;
+    await flushPromises();
+    expect(wrapper.find('.hidden-categories').text()).toContain('Private');
+    expect(wrapper.find('[data-category="Private"]').exists()).toBe(false);
+    category.unlocked = true;
+    await flushPromises();
+    expect(wrapper.find('.hidden-categories').text()).toContain('Unlocked');
+    expect(wrapper.find('[data-category="Private"]').exists()).toBe(false);
+  });
+  it('validates password confirmation and clears secrets on dismissal and navigation', async () => {
+    await openApp('/category/Travel');
+    wrapper.vm.openPrivacy('hide');
+    wrapper.vm.privacyPassword = 'secret';
+    wrapper.vm.privacyConfirmation = 'different';
+    await wrapper.vm.savePrivacy();
+    expect(wrapper.vm.privacyError).toContain('matching confirmation');
+    wrapper.vm.clearPrivacy();
+    expect(wrapper.vm.privacyPassword).toBe('');
+    expect(wrapper.vm.privacyConfirmation).toBe('');
+    wrapper.vm.openPrivacy('password');
+    wrapper.vm.privacyCurrent = 'secret';
+    await wrapper.vm.showCategories();
+    expect(wrapper.vm.privacyCurrent).toBe('');
+    expect(wrapper.vm.privacyAction).toBe('');
+  });
+});
+
+describe('category alphabet navigation', () => {
+  it('sorts visible cards and derives available letters from names and filters', async () => {
+    await openApp('/');
+    await wrapper.setData({ categorySummariesData: [
+      { name: 'Trips', tags: ['outdoors'] }, { name: ' travel' },
+      { name: 'Évents' }, { name: 'apple' }, { name: '123' },
+      { name: '東京' }, { name: 'Zoo', hidden: true },
+      { name: 'Private', locked: true, unlocked: false },
+    ] });
+    const names = () => wrapper.findAll('.category-tile').map(tile => tile.attributes('data-category'));
+    const button = letter => wrapper.findAll('.category-alphabet button').find(item => item.text() === letter);
+    expect(names()).toEqual(['apple', 'Évents', 'Private', ' travel', 'Trips', '123', '東京']);
+    expect(button('E').element.disabled).toBe(false);
+    expect(button('#').element.disabled).toBe(false);
+    expect(button('Z').element.disabled).toBe(true);
+    expect(button('P').element.disabled).toBe(false);
+    await wrapper.find('#search').setValue('Trips');
+    expect(button('T').element.disabled).toBe(false);
+    expect(button('A').element.disabled).toBe(true);
+    await wrapper.find('#search').setValue('no matches');
+    expect(wrapper.findAll('.category-alphabet button').every(item => item.element.disabled)).toBe(true);
+  });
+
+  it('scrolls and focuses the first match without opening it or changing the route', async () => {
+    const router = await openApp('/');
+    await wrapper.setData({ categorySummariesData: [{ name: 'Trips' }, { name: 'Travel' }] });
+    const tile = wrapper.findAll('.category-tile')[0].element;
+    tile.scrollIntoView = vi.fn();
+    const focus = vi.spyOn(tile, 'focus');
+    wrapper.vm.$refs.categoryAlphabet.getBoundingClientRect = () => ({ height: 96 });
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn(() => ({ matches: true }));
+    try {
+      await wrapper.find('[aria-label="Jump to T categories"]').trigger('click');
+      expect(tile.dataset.category).toBe('Travel');
+      expect(tile.scrollIntoView).toHaveBeenCalledWith({ behavior: 'instant', block: 'start', inline: 'nearest' });
+      expect(tile.style.scrollMarginTop).toBe('104px');
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(router.currentRoute.value.fullPath).toBe('/');
+      window.matchMedia = vi.fn(() => ({ matches: false }));
+      await wrapper.find('[aria-label="Jump to T categories"]').trigger('click');
+      expect(tile.scrollIntoView).toHaveBeenLastCalledWith({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+      await router.push('/category/Travel');
+      await flushPromises();
+      expect(wrapper.find('.category-alphabet').exists()).toBe(false);
+    } finally {
+      window.matchMedia = previousMatchMedia;
+    }
+  });
+
+  it('updates letter availability when tag filters change', async () => {
+    const router = await openApp('/');
+    await wrapper.setData({ categorySummariesData: [
+      { name: 'Trips', tags: ['outdoors'] }, { name: 'Art', tags: ['indoors'] },
+    ] });
+    await router.push('/?category_tag=outdoors');
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Jump to T categories"]').element.disabled).toBe(false);
+    expect(wrapper.find('[aria-label="Jump to A categories"]').element.disabled).toBe(true);
   });
 });

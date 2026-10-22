@@ -101,6 +101,24 @@
         </section>
 
         <div v-if="showCategoryGrid" class="category-menu">
+          <details class="hidden-categories">
+            <summary>Hidden categories ({{ hiddenCategorySummaries.length }})</summary>
+            <div v-for="category in hiddenCategorySummaries" :key="category.name">
+              <button class="secondary-button" @click="selectCategory(category.name)">{{ category.name }} · {{ category.unlocked ? 'Unlocked' : 'Locked' }}</button>
+              <form v-if="!category.unlocked" class="unlock-form" @submit.prevent="unlockHiddenCategory(category.name)">
+                <label :for="'hidden-password-' + category.name">Category password</label>
+                <input :id="'hidden-password-' + category.name" v-model="hiddenPasswords[category.name]" type="password" autocomplete="current-password" />
+                <button :disabled="categoryUnlocking">Unlock category</button>
+              </form>
+            </div>
+            <p v-if="categoryUnlockMessage" role="alert">{{ categoryUnlockMessage }}</p>
+          </details>
+          <nav ref="categoryAlphabet" class="category-alphabet" aria-label="Jump to categories by letter">
+            <button v-for="letter in categoryLetters" :key="letter" type="button"
+              :disabled="!categoryLetterTargets.has(letter)"
+              :aria-label="letter === '#' ? 'Jump to other categories' : `Jump to ${letter} categories`"
+              @click="jumpToCategoryLetter(letter)">{{ letter }}</button>
+          </nav>
           <nav class="category-grid" aria-label="Categories">
             <div
               v-for="category in filteredCategorySummaries"
@@ -108,7 +126,7 @@
               class="category-card"
               :class="{ active: selectedCategory === category.name }"
             >
-              <button class="category-tile" type="button" :data-category="category.name" :aria-current="selectedCategory === category.name ? 'true' : undefined" @click="selectCategory(category.name)">
+              <button ref="categoryTiles" class="category-tile" type="button" :data-category="category.name" :aria-current="selectedCategory === category.name ? 'true' : undefined" @click="selectCategory(category.name)">
                 <span class="category-cover" aria-hidden="true">
                   <img v-if="categoryCovers[category.name] && !failedCategoryCovers[categoryCovers[category.name].thumbnail_url] && (!category.locked || category.unlocked)"
                     class="category-cover-image" :src="categoryCovers[category.name].thumbnail_url" alt="" loading="lazy" decoding="async" width="320" height="180"
@@ -168,6 +186,25 @@
               </button>
               <p v-if="categoryUnlockMessage" class="message">{{ categoryUnlockMessage }}</p>
             </form>
+
+            <div v-if="!isBrowseView && viewMode === 'category' && selectedCategorySummary" class="category-privacy">
+              <button v-if="!isSelectedCategoryLocked" class="secondary-button" @click="openPrivacy('hide')">Hide category</button>
+              <template v-else>
+                <button class="secondary-button" @click="openPrivacy('password')">Change password</button>
+                <button class="secondary-button" @click="openPrivacy('unhide')">Unhide category</button>
+              </template>
+              <form v-if="privacyAction" class="unlock-form" @submit.prevent="savePrivacy">
+                <label v-if="privacyAction !== 'hide'">Current category password<input v-model="privacyCurrent" type="password" autocomplete="current-password" /></label>
+                <template v-if="privacyAction !== 'unhide'">
+                  <label>New category password<input v-model="privacyPassword" type="password" autocomplete="new-password" /></label>
+                  <label>Confirm password<input v-model="privacyConfirmation" type="password" autocomplete="new-password" /></label>
+                </template>
+                <p v-else>Unhiding removes password protection.</p>
+                <button :disabled="privacySaving">{{ privacySaving ? 'Saving…' : 'Save' }}</button>
+                <button type="button" :disabled="privacySaving" @click="clearPrivacy">Cancel</button>
+                <p v-if="privacyError" role="alert">{{ privacyError }}</p>
+              </form>
+            </div>
 
             <button v-if="!isBrowseView && viewMode === 'category' && canViewSelectedCategory" class="secondary-button category-tags-edit" @click="openCategoryTags">Edit category tags</button>
             <div v-if="!isBrowseView && canViewSelectedCategory" class="category-tag-badges"><span v-for="tag in selectedCategorySummary?.tags || []" :key="tag.toLowerCase()" class="category-tag">{{ tag }}</span></div>
@@ -571,6 +608,8 @@ export default {
       renamingCategory: false,
       pendingDeleteCategory: null,
       deletingCategory: false,
+      hiddenPasswords: {},
+      privacyAction: '', privacyCurrent: '', privacyPassword: '', privacyConfirmation: '', privacyError: '', privacySaving: false,
       categoryPassword: "",
       categoryUnlocking: false,
       categoryUnlockMessage: "",
@@ -654,16 +693,29 @@ export default {
       }
       return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name));
     },
+    hiddenCategorySummaries() { return this.categorySummaries.filter(category => category.hidden); },
     filteredCategorySummaries() {
       const query = this.query.trim().toLowerCase();
       return this.categorySummaries.filter(category => {
+        if (category.hidden) return false;
         if (query && !category.name.toLowerCase().includes(query)) return false;
         if (!this.activeCategoryTags.length) return true;
         if (category.locked && !category.unlocked) return false;
         const tags = new Set((category.tags || []).map(tag => tag.toLowerCase()));
         const matches = this.activeCategoryTags.map(tag => tags.has(tag.toLowerCase()));
         return this.categoryTagMatch === 'any' ? matches.some(Boolean) : matches.every(Boolean);
-      });
+      }).sort((a, b) => this.categoryLetter(a.name) === '#' && this.categoryLetter(b.name) !== '#' ? 1
+        : this.categoryLetter(b.name) === '#' && this.categoryLetter(a.name) !== '#' ? -1
+        : a.name.trimStart().localeCompare(b.name.trimStart(), 'en', { sensitivity: 'base', numeric: true }));
+    },
+    categoryLetters() { return [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#']; },
+    categoryLetterTargets() {
+      const targets = new Map();
+      for (const category of this.filteredCategorySummaries) {
+        const letter = this.categoryLetter(category.name);
+        if (!targets.has(letter)) targets.set(letter, category.name);
+      }
+      return targets;
     },
     categorySummaries() {
       return this.categorySummariesData;
@@ -731,6 +783,7 @@ export default {
     },
   },
   watch: {
+    selectedCategory() { this.clearPrivacy(); this.categoryPassword = ""; },
     videos: { deep: true, handler() { this.syncCategoryCovers(); } },
     categorySummariesData: { deep: true, handler() { this.syncCategoryCovers(); } },
     compactMode(value) { try { localStorage.setItem('video-library-compact', String(value)); } catch { /* Browsing remains available without storage. */ } },
@@ -794,6 +847,19 @@ export default {
     clearTimeout(this.bannerTimer);
   },
   methods: {
+    categoryLetter(name) {
+      const first = name.trimStart().normalize('NFD').replace(/\p{M}/gu, '').charAt(0).toUpperCase();
+      return /^[A-Z]$/.test(first) ? first : '#';
+    },
+    jumpToCategoryLetter(letter) {
+      const name = this.categoryLetterTargets.get(letter);
+      const tile = this.$refs.categoryTiles?.find(element => element.dataset.category === name);
+      if (!tile) return;
+      tile.style.scrollMarginTop = `${(this.$refs.categoryAlphabet?.getBoundingClientRect().height || 0) + 8}px`;
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      tile.scrollIntoView({ behavior: reducedMotion ? 'instant' : 'smooth', block: 'start', inline: 'nearest' });
+      tile.focus({ preventScroll: true });
+    },
     setCategoryTagFilters(tags, match = this.categoryTagMatch) {
       this.$router.push({ name: 'categories', query: { ...this.$route.query, category_tag: tags.length ? tags : undefined, category_match: tags.length && match === 'any' ? 'any' : undefined } });
     },
@@ -1172,9 +1238,11 @@ export default {
       });
     },
     selectCategory(category) {
-      this.$router.push({ name: "category", params: { category }, query: this.routeQueryWithMediaFilter() });
+      this.clearPrivacy(); this.categoryPassword = "";
+      return this.$router.push({ name: "category", params: { category }, query: this.routeQueryWithMediaFilter() });
     },
     async showCategories() {
+      this.clearPrivacy(); this.categoryPassword = ""; this.hiddenPasswords = {};
       const category = this.selectedCategory;
       await this.$router.push({ name: "categories", query: this.routeQueryWithMediaFilter() });
       await this.$nextTick();
@@ -1349,6 +1417,26 @@ export default {
       if (!this.categories.includes(this.editCategory)) {
         this.editCategory = this.categories[0] || "Uncategorized";
       }
+    },
+    clearPrivacy() { this.privacyAction = ''; this.privacyCurrent = ''; this.privacyPassword = ''; this.privacyConfirmation = ''; this.privacyError = ''; },
+    openPrivacy(action) { this.clearPrivacy(); this.privacyAction = action; },
+    async savePrivacy() {
+      this.privacyError = '';
+      if (this.privacyAction !== 'unhide' && (!this.privacyPassword.trim() || this.privacyPassword !== this.privacyConfirmation)) { this.privacyError = 'Enter a password and matching confirmation.'; return; }
+      this.privacySaving = true;
+      try {
+        await this.api('/api/categories/' + this.privacyAction, { method: 'POST', body: JSON.stringify({ category: this.selectedCategory, password: this.privacyPassword, current_password: this.privacyCurrent }) });
+        this.selected = null; this.videos = []; this.categoryCovers = {};
+        this.clearPrivacy(); await this.loadLibrary(); this.showBanner('Category privacy updated.');
+      } catch (error) { this.privacyError = error.message; }
+      finally { this.privacySaving = false; }
+    },
+    async unlockHiddenCategory(category) {
+      await this.selectCategory(category);
+      await this.$nextTick();
+      this.categoryPassword = this.hiddenPasswords[category] || '';
+      this.hiddenPasswords = {};
+      await this.unlockSelectedCategory();
     },
     async unlockSelectedCategory() {
       if (!this.selectedCategory || !this.isSelectedCategoryLocked) return;
