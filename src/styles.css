@@ -719,6 +719,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   min-height: 0;
 }
 
+.player-layout.has-playback-error {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.playback-error {
+  padding: 1rem;
+  border: 1px solid #ef7777;
+  border-radius: 8px;
+  background: #3b1818;
+  color: #ffe5e5;
+  overflow-wrap: anywhere;
+}
+
+.playback-error p {
+  margin: 0.5rem 0 0.75rem;
+}
+
 .carousel-stage {
   position: relative;
   display: grid;
@@ -1045,3 +1062,8 @@ textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit;
 @media (max-width: 359px) {
   .category-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.security-settings { display: grid; gap: .65rem; margin-top: 1rem; overflow-wrap: anywhere; }
+.security-settings label { display: grid; gap: .35rem; }
+.security-settings ul { padding-left: 1.2rem; }
+.security-settings li { margin-bottom: .65rem; }

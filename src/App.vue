@@ -11,9 +11,12 @@
     <form v-else-if="!authenticated" class="auth-screen" @submit.prevent="login">
       <div class="auth-panel">
         <h1>Video Library</h1>
-        <label for="password">Password</label>
-        <input id="password" v-model="password" type="password" autocomplete="current-password" autofocus />
-        <button class="scan-button" type="submit" :disabled="loggingIn">
+        <p v-if="!passkeysEnabled && !passwordEnabled" class="message">No sign-in method is available at this address. Open your configured HTTPS domain or localhost address, or use the server's auth-recover command.</p>
+        <button v-if="passkeysEnabled" type="button" class="scan-button" :disabled="loggingIn || !passkeySupported" @click="passkeyLogin">Sign in with a passkey</button>
+        <p v-if="passkeysEnabled && !passkeySupported" class="message">Passkeys require a supported browser on HTTPS or localhost.</p>
+        <label v-if="passwordEnabled" for="password">Password</label>
+        <input v-if="passwordEnabled" id="password" v-model="password" type="password" autocomplete="current-password" autofocus />
+        <button v-if="passwordEnabled" class="scan-button" type="submit" :disabled="loggingIn">
           {{ loggingIn ? "Signing in" : "Sign in" }}
         </button>
         <p v-if="authMessage" class="message">{{ authMessage }}</p>
@@ -22,6 +25,28 @@
 
     <template v-else>
       <aside class="sidebar">
+        <section v-if="authEnabled" class="sidebar-section" aria-label="Account security">
+          <button class="secondary-button" @click="toggleSecurity">Security settings</button>
+          <button class="secondary-button" @click="logout">Sign out</button>
+          <div v-if="securityOpen" class="security-settings">
+            <h2>Security settings</h2>
+            <p>Passkeys for your HTTPS domain and localhost must be enrolled separately. Password login applies to both.</p>
+            <label>Passkey name<input v-model="passkeyName" maxlength="100" placeholder="Laptop or backup key" /></label>
+            <button :disabled="securityBusy || !passkeysEnabled || !passkeySupported" @click="addPasskey">Add passkey for this hostname</button>
+            <ul><li v-for="key in securityKeys" :key="key.id">{{ key.name }} — {{ key.hostname }}
+              <button :disabled="securityBusy" @click="removePasskey(key.id)">Remove</button>
+            </li></ul>
+            <p>Verify your identity again before removing passkeys or changing password login. Disabling passwords requires passkey verification on this hostname within five minutes.</p>
+            <button v-if="passkeysEnabled" :disabled="securityBusy || !passkeySupported" @click="verifySecurityPasskey">Verify with a passkey</button>
+            <template v-if="passwordEnabled">
+              <label>Verify password<input v-model="securityPassword" type="password" autocomplete="current-password" /></label>
+              <button :disabled="securityBusy" @click="verifySecurityPassword">Verify with password</button>
+            </template>
+            <button :disabled="securityBusy" @click="setPasswordLogin(!passwordEnabled)">{{ passwordEnabled ? 'Disable password login' : 'Enable password login' }}</button>
+            <p>Enroll and test a localhost passkey before disabling passwords if you need local access. Keep a backup passkey or use the local recovery command if you lose access.</p>
+            <p role="status">{{ securityMessage }}</p>
+          </div>
+        </section>
         <section class="sidebar-section library-overview" aria-label="Library overview">
           <header class="brand">
             <h1>Video Library</h1>
@@ -305,7 +330,12 @@
       </aside>
 
       <section class="viewer">
-        <div v-if="selected" class="player-layout">
+        <div v-if="selected" class="player-layout" :class="{ 'has-playback-error': playbackError }">
+          <div v-if="playbackError" class="playback-error" role="alert">
+            <strong>Could not play {{ selected.title || selected.filename }}.</strong>
+            <p>{{ playbackError }}</p>
+            <button class="secondary-button" type="button" @click="retryPlayback">Retry playback</button>
+          </div>
           <div class="carousel-stage">
             <button
               class="carousel-control previous"
@@ -320,6 +350,7 @@
             <video
               v-if="selected.media_type === 'video'"
               ref="player"
+              :key="selected.id"
               class="player"
               :src="selected.stream_url"
               controls
@@ -327,6 +358,8 @@
               playsinline
               webkit-playsinline
               @ended="playNextMedia"
+              @error="handlePlaybackError"
+              @playing="playbackError = ''"
             ></video>
             <img
               v-else
@@ -354,6 +387,10 @@
               <span>Media Details</span>
               <small>{{ selected.filename }} · {{ formatBytes(selected.size_bytes) }}</small>
             </summary>
+            <div v-if="selected.media_type === 'video'" class="details-panel">
+              <button class="secondary-button" type="button" :disabled="checkingPlayback" @click="checkPlaybackCompatibility">{{ checkingPlayback ? 'Checking…' : 'Check iPhone compatibility' }}</button>
+              <p v-if="playbackCheck" :role="playbackCheck.status === 'warning' ? 'alert' : 'status'" :class="{ 'playback-error': playbackCheck.status === 'warning' }">{{ playbackCheck.message }}</p>
+            </div>
             <form class="details-panel" @submit.prevent="saveSelected">
               <div>
                 <label for="title">Title</label>
@@ -547,10 +584,14 @@
 </template>
 
 <script>
+import { usePasskey, passkeysSupported } from "./passkeys";
 import { createShuffle, nextShuffle } from "./shuffle";
 export default {
   data() {
     return {
+      playbackError: '',
+      playbackCheck: null,
+      checkingPlayback: false,
       shuffleEnabled: (() => { try { return localStorage.getItem('video-library-shuffle') === 'true'; } catch { return false; } })(),
       shuffleState: createShuffle([], null),
       compactMode: (() => { try { return localStorage.getItem('video-library-compact') === 'true'; } catch { return false; } })(),
@@ -584,6 +625,15 @@ export default {
       authChecked: false,
       authenticated: false,
       authEnabled: false,
+      passwordEnabled: true,
+      passkeysEnabled: false,
+      passkeySupported: passkeysSupported(),
+      securityOpen: false,
+      securityBusy: false,
+      securityMessage: "",
+      securityKeys: [],
+      passkeyName: "",
+      securityPassword: "",
       password: "",
       authMessage: "",
       loggingIn: false,
@@ -783,6 +833,7 @@ export default {
     },
   },
   watch: {
+    'selected.id'() { this.playbackError = ''; this.playbackCheck = null; this.checkingPlayback = false; },
     selectedCategory() { this.clearPrivacy(); this.categoryPassword = ""; },
     videos: { deep: true, handler() { this.syncCategoryCovers(); } },
     categorySummariesData: { deep: true, handler() { this.syncCategoryCovers(); } },
@@ -1074,6 +1125,8 @@ export default {
       try {
         const status = await this.api("/api/auth/status");
         this.authEnabled = status.enabled;
+        this.passwordEnabled = status.password_enabled !== false;
+        this.passkeysEnabled = Boolean(status.passkeys_enabled);
         this.authenticated = status.authenticated;
         if (this.authenticated) {
           await this.loadConfig();
@@ -1084,6 +1137,48 @@ export default {
       } finally {
         this.authChecked = true;
       }
+    },
+    async passkeyLogin() {
+      this.loggingIn = true; this.authMessage = "";
+      try {
+        await usePasskey(this.api.bind(this), 'login');
+        await this.checkAuth();
+      } catch (error) { this.authMessage = error.message; }
+      finally { this.loggingIn = false; }
+    },
+    async loadSecurity() {
+      const settings = await this.api('/api/auth/passkeys');
+      this.securityKeys = settings.credentials;
+      this.passwordEnabled = settings.password_enabled;
+    },
+    async securityAction(action, success) {
+      if (this.securityBusy) return;
+      this.securityBusy = true; this.securityMessage = "";
+      try { await action(); await this.loadSecurity(); this.securityMessage = success; }
+      catch (error) { this.securityMessage = error.message; }
+      finally { this.securityBusy = false; this.securityPassword = ""; }
+    },
+    async toggleSecurity() {
+      this.securityOpen = !this.securityOpen; this.securityPassword = ""; this.securityMessage = "";
+      if (this.securityOpen) await this.securityAction(async () => {}, '');
+    },
+    async addPasskey() {
+      await this.securityAction(async () => {
+        if (!this.passkeyName.trim()) throw new Error('Enter a name for this passkey.');
+        await usePasskey(this.api.bind(this), 'register', this.passkeyName.trim()); this.passkeyName = "";
+      }, 'Passkey added. Verify with it before disabling password login.');
+    },
+    async verifySecurityPasskey() {
+      await this.securityAction(() => usePasskey(this.api.bind(this), 'login'), 'Passkey verified for five minutes.');
+    },
+    async verifySecurityPassword() {
+      await this.securityAction(() => this.api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: this.securityPassword }) }), 'Password verified for five minutes.');
+    },
+    async removePasskey(id) {
+      await this.securityAction(() => this.api('/api/auth/passkeys/' + encodeURIComponent(id), { method: 'DELETE' }), 'Passkey removed. Other sessions have been signed out.');
+    },
+    async setPasswordLogin(enabled) {
+      await this.securityAction(() => this.api('/api/auth/password', { method: 'PATCH', body: JSON.stringify({ enabled }) }), enabled ? 'Password login enabled.' : 'Password login disabled. Other sessions have been signed out.');
     },
     async login() {
       this.loggingIn = true;
@@ -1104,6 +1199,7 @@ export default {
       }
     },
     async logout() {
+      this.securityOpen = false; this.securityPassword = ""; this.securityKeys = [];
       await this.api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
       this.authenticated = false;
       this.categoryCovers = {};
@@ -1297,6 +1393,34 @@ export default {
         params: { category: this.selectedCategory },
         query: this.routeQueryWithMediaFilter(),
       });
+    },
+    async checkPlaybackCompatibility() {
+      const selected = this.selected;
+      if (!selected || this.checkingPlayback) return;
+      this.checkingPlayback = true;
+      this.playbackCheck = null;
+      try {
+        const result = await this.api(`/api/videos/${selected.id}/playback-check`);
+        if (this.selected?.id === selected.id) this.playbackCheck = result;
+      } catch (error) {
+        if (this.selected?.id === selected.id) this.playbackCheck = { status: 'unknown', message: error.message };
+      } finally {
+        if (this.selected?.id === selected.id) this.checkingPlayback = false;
+      }
+    },
+    handlePlaybackError(event) {
+      if (event.target !== this.$refs.player) return;
+      const reasons = {
+        1: 'Playback was interrupted. Try loading the video again.',
+        2: 'A network error stopped the video from loading. Check your connection and try again.',
+        3: 'The browser could not decode this video. The file may be damaged or use an unsupported codec.',
+        4: 'The video could not be loaded. Its format or codec may be unsupported, or the file may be unavailable.',
+      };
+      this.playbackError = reasons[event.target.error?.code] || 'The browser could not play this video. The file may be unavailable or unsupported. Try again.';
+    },
+    retryPlayback() {
+      this.playbackError = '';
+      this.$refs.player?.load();
     },
     showBanner(message, type = "success") {
       this.bannerMessage = message;

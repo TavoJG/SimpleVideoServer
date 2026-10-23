@@ -426,6 +426,39 @@ describe("folder browsing", () => {
     expect(document.title).toBe("Private - Video Library");
     expect(wrapper.text()).toContain("Unlock this category");
   });
+  it.each([
+    [1, 'interrupted'], [2, 'network error'], [3, 'decode'], [4, 'format or codec'], [0, 'unavailable or unsupported'],
+  ])('explains playback error %s and clears it after recovery or navigation', async (code, reason) => {
+    const router = await openApp('/category/Travel/media/4');
+    const player = wrapper.find('video');
+    Object.defineProperty(player.element, 'error', { configurable: true, value: { code } });
+    await player.trigger('error');
+    expect(wrapper.find('.playback-error').attributes('role')).toBe('alert');
+    expect(wrapper.find('.playback-error').text()).toContain('Coast drive');
+    expect(wrapper.find('.playback-error').text()).toContain(reason);
+    const reload = vi.spyOn(player.element, 'load').mockImplementation(() => {});
+    await wrapper.find('.playback-error button').trigger('click');
+    expect(reload).toHaveBeenCalledOnce();
+    await player.trigger('error');
+    await player.trigger('playing');
+    expect(wrapper.find('.playback-error').exists()).toBe(false);
+    await player.trigger('error');
+    await router.push('/category/Travel/media/1');
+    await flushPromises();
+    expect(wrapper.find('.playback-error').exists()).toBe(false);
+  });
+
+  it('shows a server compatibility warning and clears it when selecting another file', async () => {
+    const router = await openApp('/category/Travel/media/4');
+    vi.spyOn(wrapper.vm, 'api').mockResolvedValue({ status: 'warning', message: 'H.264 level is too low.' });
+    await wrapper.vm.checkPlaybackCompatibility();
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toContain('H.264 level is too low');
+    await router.push('/category/Travel/media/1');
+    await flushPromises();
+    expect(wrapper.vm.playbackCheck).toBeNull();
+  });
+
   it("advances after video ends without saving playback", async () => {
     const router = await openApp("/category/Travel");
     wrapper.vm.videos.find((video) => video.id === 1).title = "Zebra beach";

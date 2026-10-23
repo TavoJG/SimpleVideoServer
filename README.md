@@ -39,7 +39,43 @@ Set `APP_PASSWORD` to require a password before the library can be used:
 VIDEO_ROOT=/path/to/videos APP_PASSWORD='change-me' go run .
 ```
 
-If `APP_PASSWORD` is unset, the main login is disabled; category passwords still apply.
+If `APP_PASSWORD` is unset and passkeys have never been configured or enrolled, the main login is disabled; category passwords still apply. Once credentials exist, removing `APP_PASSWORD` does not remove login protection.
+
+### Passkey login (one owner)
+
+Configure exact allowed origins as a comma-separated list, without paths or trailing slashes. Replace the example domain with your actual HTTPS domain:
+
+```bash
+VIDEO_ROOT=/path/to/videos \
+APP_PASSWORD='your-initial-password' \
+APP_AUTH_ORIGINS='https://video.example.com,http://localhost:5000' \
+go run .
+```
+
+For Vite development, also explicitly add `http://localhost:5173`. Use `localhost`, rather than `127.0.0.1` or a LAN IP, for local passkeys. Localhost still requires login; only its HTTPS requirement is relaxed. A device visiting localhost connects to itself, so use an SSH tunnel if accessing the server locally from another computer.
+
+1. Sign in with your existing password and open **Security settings**.
+2. Name and add a passkey on your HTTPS domain. Your device must verify you with its biometric, PIN, or security key. No username is needed.
+3. Add a backup passkey. If you need localhost access, sign in there with your password and enroll a separate localhost passkey before disabling passwords. Domain credentials do not work on localhost.
+4. Use **Verify with a passkey** on the hostname where you are changing settings, then explicitly select **Disable password login**. This disables passwords everywhere. Enrollment alone never disables passwords.
+
+Security settings list credentials by hostname. Removing credentials or changing password policy requires authentication within the last five minutes on the current origin. Disabling passwords specifically requires passkey authentication. You cannot remove the final passkey while password login is unavailable. Removing a credential or changing password policy revokes other sessions.
+
+Existing cookies from the former password-based login stop working after upgrading; sign in again. New sessions last 30 days, persist across restarts, and are individually revoked on sign-out. Sessions use a random database-backed secret independent of `APP_PASSWORD`; changing that environment variable alone does not revoke sessions. Category passwords are unaffected.
+
+Keep your SQLite database backed up using a consistent SQLite backup (or stop the service before copying the database and any WAL files). It contains the owner's public credentials, login policy, and session secret; protect backups like other server secrets. Private passkey keys remain with your authenticator or passkey provider. Database restoration restores the saved login state too. A hostname change requires new enrollment on that hostname.
+
+Keep TLS termination at your existing reverse proxy. Preserve the browser's `Host` header, proxy `/api`, `/media`, and `/thumb` along with the frontend, and configure the public HTTPS origin exactly. Authentication does not trust `X-Forwarded-Host` or `X-Forwarded-Proto` to select origins or relying-party IDs. HTTPS session cookies are Secure; HTTP localhost cookies remain usable locally. Restrict direct backend network exposure according to your deployment.
+
+If all passkeys are lost, stop the service and run recovery locally as the service user, using the same database:
+
+```bash
+sudo systemctl stop video-server
+sudo -u video-server env VIDEO_DB=/opt/video-server/videos.sqlite3 \
+  APP_PASSWORD='replacement-password' /opt/video-server/video-server auth-recover
+```
+
+Set the same replacement `APP_PASSWORD` in the service configuration, reload systemd, and restart the service. Recovery refuses to run while the database is locked by the server, re-enables passwords, rotates the session secret, and invalidates all sessions. Pending challenges are in memory and disappear when the server stops. Existing passkeys are retained so you can remove lost keys after signing in. An initial nonempty `APP_PASSWORD` is required when configuring passkeys for the first time.
 
 Manage privacy in a category using **Hide category**, **Change password**, and **Unhide category**. Hidden categories appear only in the separate **Hidden categories** area. Unlocking lasts 12 hours; **Lock again** ends access in this browser. Changing a password invalidates existing unlock cookies. Changing passwords and unhiding require the current category password; there is no main-password recovery. Unhiding removes protection.
 
@@ -63,6 +99,8 @@ sudo apt install ffmpeg
 The scanner reads supported media files at the library root and directly inside category folders. Categories are single folder names. Nested directories are preserved, excluded from indexing, and reported as scan warnings. Uncategorized represents files at the library root.
 
 In the viewer, videos automatically advance when playback ends. Previous and next controls navigate media within the current filtered view.
+
+Open **Media Details → Check iPhone compatibility** to inspect a selected video with server-side `ffprobe` (included with FFmpeg). The check warns when an H.264 stream declares a level too low for its resolution or frame rate, a possible cause of iPhone playback failure. It does not modify files or guarantee playback: bitrate, reference frames, audio, file integrity and HTTP delivery are not validated. Unsupported codecs or unreadable metadata produce an inconclusive result.
 
 From the main category page, **Shuffle all videos** starts playback across all unlocked categories and clears existing search and media filters.
 
@@ -198,6 +236,10 @@ The server uses Go's standard `net/http` router. If this grows beyond a small lo
 - `GET /api/config`
 - `GET /api/auth/status`
 - `POST /api/auth/login`
+- `POST /api/auth/passkeys/{register|login}/{begin|finish}`
+- `GET /api/auth/passkeys`
+- `DELETE /api/auth/passkeys/{id}`
+- `PATCH /api/auth/password` (`{"enabled": true|false}`)
 - `POST /api/auth/logout`
 - `GET /api/videos`
 - `GET /api/videos/<id>`

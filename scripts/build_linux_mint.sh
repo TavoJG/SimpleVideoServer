@@ -68,6 +68,10 @@ host can reach it. If UFW is active, allow TCP port 5000 as appropriate.
 For later binary updates, copy the new binary into /opt/video-server and run:
 
   sudo systemctl restart video-server
+For optional passkey login, configure APP_AUTH_ORIGINS with your actual HTTPS
+origin and http://localhost:5000 in the service configuration. Keep APP_PASSWORD
+for initial enrollment. Follow README.md for backup keys, separate localhost
+enrollment, disabling passwords, and the offline auth-recover command.
 INSTALL
 
 echo "Built ${out_dir}"
