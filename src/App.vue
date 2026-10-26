@@ -330,6 +330,8 @@
       </aside>
 
       <section class="viewer">
+        <button class="secondary-button" @click="duplicateReviewOpen = !duplicateReviewOpen">{{ duplicateReviewOpen ? 'Close duplicate review' : 'Review duplicates' }}</button>
+        <DuplicateReview v-if="duplicateReviewOpen" :videos="videos" :api="api" @deleted="onDuplicateDeleted" />
         <div v-if="selected" class="player-layout" :class="{ 'has-playback-error': playbackError }">
           <div v-if="playbackError" class="playback-error" role="alert">
             <strong>Could not play {{ selected.title || selected.filename }}.</strong>
@@ -586,9 +588,12 @@
 <script>
 import { usePasskey, passkeysSupported } from "./passkeys";
 import { createShuffle, nextShuffle } from "./shuffle";
+import DuplicateReview from './DuplicateReview.vue';
 export default {
+  components: { DuplicateReview },
   data() {
     return {
+      duplicateReviewOpen: false,
       playbackError: '',
       playbackCheck: null,
       checkingPlayback: false,
@@ -1104,6 +1109,12 @@ export default {
         if (player.paused) player.play()?.catch(() => this.showBanner("Playback could not start.", "error"));
         else player.pause();
       }
+    },
+    onDuplicateDeleted(id) {
+      this.videos = this.videos.filter(item => item.id !== id);
+      this.selectedIds = this.selectedIds.filter(value => value !== id);
+      if (this.selected?.id === id) this.selected = null;
+      this.loadCategories().catch(error => this.showBanner(error.message, 'error'));
     },
     async api(path, options = {}) {
       const response = await fetch(path, {

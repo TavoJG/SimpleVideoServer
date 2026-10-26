@@ -131,6 +131,62 @@ Category names can be renamed from the category controls. This renames the backi
 
 ## Library Management
 
+### Find visually similar media
+
+Use Python 3.10+ with `ffmpeg` and `ffprobe` installed:
+
+```bash
+python3 scripts/find_similar_media.py /path/to/videos
+python3 scripts/find_similar_media.py /path/to/videos --recursive --json > similar-media.json
+```
+
+This read-only script finds candidate pairs despite different SHA-256 hashes,
+using 64-bit difference hashes (dHash) of decoded images and sampled video frames.
+It shares the exact-duplicate script's extension filtering, folder scope, and
+symlink exclusions. The path defaults to `VIDEO_ROOT` when omitted.
+
+Videos must have durations within 2% and all five evenly spaced interior samples
+must differ by at most six hash bits. Adjust `--samples`, `--threshold`, or
+`--duration-tolerance` to tune matching. Lower thresholds are stricter. Images
+use their first frame, including animated image formats. Images and videos are
+compared separately; audio is not compared.
+
+The similarity percentage describes hash agreement, not confidence that files
+are duplicates. Review each pair before removing anything: blank frames, simple
+scenes, or unsampled differences can cause false matches. Cropping, trimming,
+time offsets, and substantial edits can cause missed matches. Matches are pairs,
+not transitive groups. The script never deletes files or edits library metadata.
+
+To review candidates before deleting, generate a JSON report with the command
+above, open **Review duplicates** in the web viewer, and import the report.
+Images and playable videos appear side by side with filenames, sizes, and links
+to open the original media. Select a copy for deletion or choose **Keep both**,
+then move through pairs with **Previous pair** and **Next pair**. Selections
+apply to files across all pairs. **Review deletions** lists the selected paths;
+the final **Permanently delete selected files** button applies the deletion.
+Both copies of any reported pair cannot be selected together.
+
+Only currently indexed, accessible files with paths matching the report are
+shown. Unlock hidden categories and refresh the library before importing if
+needed. Generate the report against the server's absolute media paths; reports
+from another filesystem location will not match. Deletions use the existing
+authenticated library API and remove database records as well as files. Errors
+retain failed selections for review and explicit retry. Imported reports and
+review choices remain only in memory and reset when the review screen closes.
+
+Fingerprinting prints progress to stderr. JSON contains `scanned`, `matches`, and
+`errors`; unreadable media are skipped and cause exit status 1. Each decode has a
+60-second timeout. Comparisons grow quadratically with the number of files, so
+scan smaller folders for large libraries. Avoid modifying files during a scan.
+
+Run the regression checks with:
+
+```bash
+python3 -m unittest discover -s scripts -p test_find_similar_media.py
+```
+
+### Find exact duplicates
+
 Find exact duplicates regardless of filename with the standalone Python 3 script:
 
 ```bash
