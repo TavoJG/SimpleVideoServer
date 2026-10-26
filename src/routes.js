@@ -1,4 +1,5 @@
 export const routes = [
+  { path: '/duplicates', name: 'duplicates', component: { template: '<span />' } },
   { path: "/browse", name: "browse", component: { template: "<span />" } },
   { path: "/browse/media/:id", name: "browse-media", component: { template: "<span />" } },
   { path: "/", name: "categories", component: { template: "<span />" } },

@@ -158,21 +158,23 @@ time offsets, and substantial edits can cause missed matches. Matches are pairs,
 not transitive groups. The script never deletes files or edits library metadata.
 
 To review candidates before deleting, generate a JSON report with the command
-above, open **Review duplicates** in the web viewer, and import the report.
+above, open **Review duplicates** in the web viewer (the dedicated `/duplicates`
+page), and import the report.
 Images and playable videos appear side by side with filenames, sizes, and links
-to open the original media. Select a copy for deletion or choose **Keep both**,
-then move through pairs with **Previous pair** and **Next pair**. Selections
-apply to files across all pairs. **Review deletions** lists the selected paths;
-the final **Permanently delete selected files** button applies the deletion.
-Both copies of any reported pair cannot be selected together.
+to open the original media. Each preview has a **Permanently delete this file**
+button that immediately deletes that one copy, with no batch selection or extra
+review step. The other file is retained. All pairs containing the deleted file
+are removed and the next available pair appears automatically. Choose **Keep
+both** to advance without deleting, or navigate with **Previous pair** and
+**Next pair**. The page uses the full desktop width and stacks previews on mobile.
 
 Only currently indexed, accessible files with paths matching the report are
 shown. Unlock hidden categories and refresh the library before importing if
 needed. Generate the report against the server's absolute media paths; reports
 from another filesystem location will not match. Deletions use the existing
-authenticated library API and remove database records as well as files. Errors
-retain failed selections for review and explicit retry. Imported reports and
-review choices remain only in memory and reset when the review screen closes.
+authenticated library API and remove database records as well as files. Failed
+deletions keep the pair visible for retry. Imported reports remain only in memory
+and reset when you leave or reload the page. Use **Back to library** to return.
 
 Fingerprinting prints progress to stderr. JSON contains `scanned`, `matches`, and
 `errors`; unreadable media are skipped and cause exit status 1. Each decode has a
@@ -186,6 +188,23 @@ python3 -m unittest discover -s scripts -p test_find_similar_media.py
 ```
 
 ### Find exact duplicates
+
+After deleting media with standalone scripts, run a library scan to mark absent
+paths as missing. To remove those stale database records, first ensure the media
+drive is mounted, finish the scan, then stop the server:
+
+```bash
+python3 scripts/cleanup_missing_media.py --db videos.sqlite3 --root /path/to/videos
+python3 scripts/cleanup_missing_media.py --db videos.sqlite3 --root /path/to/videos --apply
+```
+
+The first command previews eligible records. `--apply` creates a timestamped
+SQLite backup beside the database and removes records only. Existing paths are
+preserved even if marked missing, and other library roots are untouched. Pending
+recovery operations must be resolved by starting the server before cleanup.
+The script accepts `VIDEO_DB` and `VIDEO_ROOT` defaults. Restart and scan again
+after cleanup to refresh the displayed counts. Removed records lose their stored
+titles and favorites; no media files are deleted by this cleanup.
 
 Find exact duplicates regardless of filename with the standalone Python 3 script:
 

@@ -783,3 +783,27 @@ describe('category alphabet navigation', () => {
     expect(wrapper.find('[aria-label="Jump to A categories"]').element.disabled).toBe(true);
   });
 });
+
+describe('dedicated duplicate page', () => {
+  it('opens directly without the library sidebar or viewer and returns to the library', async () => {
+    const router = await openApp('/duplicates');
+    expect(router.currentRoute.value.name).toBe('duplicates');
+    expect(wrapper.classes()).toContain('duplicate-page');
+    expect(wrapper.find('.duplicate-review').exists()).toBe(true);
+    expect(wrapper.find('.sidebar').exists()).toBe(false);
+    expect(wrapper.find('.viewer').exists()).toBe(false);
+    await wrapper.find('.duplicate-page-content > a').trigger('click');
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe('categories');
+    expect(wrapper.find('.sidebar').exists()).toBe(true);
+  });
+  it('links from the library to the dedicated route', async () => {
+    const router = await openApp('/');
+    const link = wrapper.find('a[href="/duplicates"]');
+    expect(link.exists()).toBe(true);
+    await link.trigger('click');
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe('duplicates');
+    expect(wrapper.find('.viewer').exists()).toBe(false);
+  });
+});

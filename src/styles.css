@@ -1067,3 +1067,16 @@ textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit;
 .security-settings label { display: grid; gap: .35rem; }
 .security-settings ul { padding-left: 1.2rem; }
 .security-settings li { margin-bottom: .65rem; }
+
+.app-shell.duplicate-page {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+}
+.duplicate-page-content {
+  width: 100%;
+  max-width: 1920px;
+  margin: 0 auto;
+  padding: clamp(1rem, 2vw, 2.5rem);
+}

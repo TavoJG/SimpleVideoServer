@@ -1,5 +1,5 @@
 <template>
-  <main class="app-shell" :class="{ 'compact-mode': compactMode }">
+  <main class="app-shell" :class="{ 'compact-mode': compactMode, 'duplicate-page': $route.name === 'duplicates' }">
     <div v-if="bannerMessage" class="status-banner" :class="bannerType">
       {{ bannerMessage }}
     </div>
@@ -23,6 +23,11 @@
       </div>
     </form>
 
+    <section v-else-if="$route.name === 'duplicates'" class="duplicate-page-content">
+      <RouterLink :to="{ name: 'categories' }">← Back to library</RouterLink>
+      <p v-if="loadingLibrary" role="status">Loading library…</p>
+      <DuplicateReview v-else :videos="videos" :api="api" @deleted="onDuplicateDeleted" />
+    </section>
     <template v-else>
       <aside class="sidebar">
         <section v-if="authEnabled" class="sidebar-section" aria-label="Account security">
@@ -330,8 +335,7 @@
       </aside>
 
       <section class="viewer">
-        <button class="secondary-button" @click="duplicateReviewOpen = !duplicateReviewOpen">{{ duplicateReviewOpen ? 'Close duplicate review' : 'Review duplicates' }}</button>
-        <DuplicateReview v-if="duplicateReviewOpen" :videos="videos" :api="api" @deleted="onDuplicateDeleted" />
+        <RouterLink class="secondary-button" :to="{ name: 'duplicates' }">Review duplicates</RouterLink>
         <div v-if="selected" class="player-layout" :class="{ 'has-playback-error': playbackError }">
           <div v-if="playbackError" class="playback-error" role="alert">
             <strong>Could not play {{ selected.title || selected.filename }}.</strong>
@@ -593,7 +597,6 @@ export default {
   components: { DuplicateReview },
   data() {
     return {
-      duplicateReviewOpen: false,
       playbackError: '',
       playbackCheck: null,
       checkingPlayback: false,
@@ -1075,6 +1078,7 @@ export default {
       if (this.retryPayload) await this.runBulk({ ...this.retryPayload, ids: this.powerFailures.map(item => item.id) });
     },
     handleKeydown(event) {
+      if (this.$route.name === 'duplicates') return;
       if (this.activeDialog) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1262,6 +1266,7 @@ export default {
     },
     syncRouteState() {
       if (!this.authenticated) return;
+      if (this.$route.name === 'duplicates') { this.selected = null; return; }
       this.mediaFilter = this.normalizeMediaFilter(this.$route.query.type);
       this.sortMode = this.normalizeSortMode(this.$route.query.sort);
       this.viewMode = this.normalizeViewMode(this.$route.query.view);
