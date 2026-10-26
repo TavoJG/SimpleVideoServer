@@ -17,6 +17,8 @@ Environment=VIDEO_ROOT=/srv/videos
 Environment=VIDEO_DB=/opt/video-server/videos.sqlite3
 Environment=VIDEO_THUMB_DIR=/opt/video-server/thumbnails
 Environment=APP_PASSWORD=change-me
+# Optional passkeys: replace this example with your actual public HTTPS origin.
+# Environment=APP_AUTH_ORIGINS=https://video.example.com,http://localhost:5000
 
 NoNewPrivileges=true
 PrivateTmp=true

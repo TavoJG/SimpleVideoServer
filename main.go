@@ -46,6 +46,10 @@ type server struct {
 	db               *sql.DB
 	defaultVideoRoot string
 	thumbnailDir     string
+	authOnce         sync.Once
+	auth             *ownerAuth
+	authErr          error
+	authOrigins      string
 	password         string
 	lockedCategories map[string]string
 	categoryAliases  map[string]string
@@ -139,6 +143,12 @@ type categoryUnlockRequest struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "auth-recover" {
+		if err := recoverOwnerAuth(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "migrate-categories" {
 		if err := runCategoryMigration(os.Args[2:], os.Stdout); err != nil {
 			log.Fatal(err)
@@ -166,7 +176,11 @@ func main() {
 		defaultVideoRoot: os.Getenv("VIDEO_ROOT"),
 		thumbnailDir:     envOrDefault("VIDEO_THUMB_DIR", "thumbnails"),
 		password:         strings.TrimSpace(os.Getenv("APP_PASSWORD")),
+		authOrigins:      os.Getenv("APP_AUTH_ORIGINS"),
 		lockedCategories: parseLockedCategories(os.Getenv("APP_LOCKED_CATEGORIES")),
+	}
+	if _, err := srv.ownerAuthentication(); err != nil {
+		log.Fatal(err)
 	}
 	if err := srv.loadCategoryAliases(); err != nil {
 		log.Fatal(err)
@@ -209,6 +223,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
+	s.passkeyRoutes(mux)
 	mux.Handle("GET /api/config", s.authRequired(http.HandlerFunc(s.config)))
 	mux.Handle("POST /api/scan", s.authRequired(http.HandlerFunc(s.scan)))
 	mux.Handle("GET /api/category-migrations", s.authRequired(http.HandlerFunc(s.categoryMigrationMappings)))
@@ -227,6 +242,9 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /media/{id}", s.authRequired(http.HandlerFunc(s.media)))
 	mux.Handle("GET /thumb/{id}", s.authRequired(http.HandlerFunc(s.thumbnail)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/auth/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/subcategories/") {
 			writeError(w, 410, "Subcategories were removed; use flat categories.")
 			return
@@ -574,85 +592,92 @@ func (s *server) authRequired(next http.Handler) http.Handler {
 }
 
 func (s *server) authStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
-		"enabled":       s.authEnabled(),
-		"authenticated": s.isAuthenticated(r),
-	})
+	a, err := s.ownerAuthentication()
+	if err != nil {
+		writeError(w, 500, "Authentication unavailable.")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"enabled": s.authEnabled(), "authenticated": s.isAuthenticated(r), "password_enabled": a.passwordAllowed(s), "passkeys_enabled": a.clients[r.Header.Get("Origin")] != nil || a.clientForPage(r) != nil})
 }
-
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	a, err := s.ownerAuthentication()
+	if err != nil {
+		writeError(w, 500, "Authentication unavailable.")
+		return
+	}
+	if !a.validMutation(r) {
+		writeError(w, 403, "Origin not allowed.")
+		return
+	}
+	if !a.allow(r) {
+		writeError(w, 429, "Too many attempts. Try again later.")
+		return
+	}
 	if !s.authEnabled() {
-		writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+		writeJSON(w, 200, map[string]bool{"authenticated": true})
 		return
 	}
-
 	var req loginRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+	if readJSON(r, &req) != nil {
+		writeError(w, 400, "Invalid JSON body.")
 		return
 	}
-	if !constantStringEqual(req.Password, s.password) {
-		writeError(w, http.StatusUnauthorized, "Invalid password.")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.passwordAllowed(s) || !constantStringEqual(req.Password, s.password) {
+		writeError(w, 401, "Invalid password.")
 		return
 	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "video_server_auth",
-		Value:    s.authToken(),
-		Path:     "/",
-		MaxAge:   60 * 60 * 24 * 30,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+	if err := a.issueSession(s, w, r, false); err != nil {
+		writeError(w, 500, "Could not create session.")
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"authenticated": true})
 }
-
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "video_server_auth",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	for _, cookie := range r.Cookies() {
-		if strings.HasPrefix(cookie.Name, "video_server_lock_") {
-			http.SetCookie(w, &http.Cookie{Name: cookie.Name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	a, err := s.ownerAuthentication()
+	if err != nil {
+		writeError(w, 500, "Authentication unavailable.")
+		return
+	}
+	if !a.validMutation(r) {
+		writeError(w, 403, "Origin not allowed.")
+		return
+	}
+	if c, e := r.Cookie("video_server_auth"); e == nil {
+		if _, err := s.db.Exec("DELETE FROM owner_sessions WHERE token=?", a.sign(c.Value)); err != nil {
+			writeError(w, 500, "Could not revoke session. Try signing out again.")
+			return
 		}
 	}
-	for category := range s.lockedCategories {
-		http.SetCookie(w, &http.Cookie{
-			Name:     s.categoryCookieName(category),
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
+	a.clearCookie(w, r, "video_server_auth")
+	for _, c := range r.Cookies() {
+		if strings.HasPrefix(c.Name, "video_server_lock_") {
+			a.clearCookie(w, r, c.Name)
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+	writeJSON(w, 200, map[string]bool{"authenticated": false})
 }
-
 func (s *server) authEnabled() bool {
-	return s.password != ""
+	a, err := s.ownerAuthentication()
+	if err != nil {
+		return true
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM owner_credentials").Scan(&count); err != nil {
+		return true
+	}
+	return s.password != "" || count > 0 || len(a.clients) > 0
 }
-
 func (s *server) isAuthenticated(r *http.Request) bool {
 	if !s.authEnabled() {
 		return true
 	}
-	cookie, err := r.Cookie("video_server_auth")
+	a, err := s.ownerAuthentication()
 	if err != nil {
 		return false
 	}
-	return constantStringEqual(cookie.Value, s.authToken())
-}
-
-func (s *server) authToken() string {
-	mac := hmac.New(sha256.New, []byte(s.password))
-	mac.Write([]byte("video-server-auth"))
-	return hex.EncodeToString(mac.Sum(nil))
+	return a.session(s, r) != nil
 }
 
 func constantStringEqual(a string, b string) bool {
@@ -764,11 +789,20 @@ func (s *server) listVideos(w http.ResponseWriter, r *http.Request) {
 func (s *server) videoItem(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/videos/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "delete") {
+	if len(parts) == 0 || parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "delete" && parts[1] != "playback-check") {
 		http.NotFound(w, r)
 		return
 	}
 	r.SetPathValue("id", parts[0])
+	if len(parts) == 2 && parts[1] == "playback-check" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed.")
+			return
+		}
+		s.videoPlaybackCheck(w, r)
+		return
+	}
 
 	if len(parts) == 2 {
 		if r.Method != http.MethodPost {

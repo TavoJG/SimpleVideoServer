@@ -69,6 +69,10 @@ Install ffmpeg if you want generated thumbnails for videos:
 
   sudo apt update
   sudo apt install -y ffmpeg
+For optional passkey login, configure APP_AUTH_ORIGINS with your actual HTTPS
+origin and http://localhost:5000 in the service configuration. Keep APP_PASSWORD
+for initial enrollment. Follow README.md for backup keys, separate localhost
+enrollment, disabling passwords, and the offline auth-recover command.
 INSTALL
 
 echo "Built ${out_dir}"
