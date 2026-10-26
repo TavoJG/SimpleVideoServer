@@ -17,39 +17,52 @@ describe('duplicate review', () => {
     expect(api).not.toHaveBeenCalled();
     wrapper.unmount();
   });
-  it('requires confirmation and preserves a copy in overlapping pairs', async () => {
-    const { wrapper, api } = await setup([match(1, 2), match(2, 3)]);
-    wrapper.vm.toggle(1, true);
-    await wrapper.vm.applyDeletions();
-    expect(api).not.toHaveBeenCalled();
-    wrapper.vm.toggle(2, true);
-    wrapper.vm.confirming = true;
-    await wrapper.vm.applyDeletions();
-    expect(api).not.toHaveBeenCalled();
-    wrapper.vm.toggle(1, false);
-    wrapper.vm.confirming = true;
-    await wrapper.vm.applyDeletions();
+  it('deletes the chosen copy immediately and removes overlapping pairs', async () => {
+    const { wrapper, api } = await setup([match(1, 2), match(2, 3), match(1, 3)]);
+    await wrapper.findAll('.delete-button')[1].trigger('click');
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(api).toHaveBeenCalledWith('/api/videos/2/delete', { method: 'POST', body: '{}' });
     expect(wrapper.emitted('deleted')).toEqual([[2]]);
-    expect(wrapper.vm.pairs).toHaveLength(0);
+    expect(wrapper.vm.pairs).toHaveLength(1);
+    expect(wrapper.vm.pair.left.id).toBe(1);
+    expect(wrapper.vm.pair.right.id).toBe(3);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     wrapper.unmount();
   });
-  it('keeps failed deletions for explicit retry', async () => {
+  it('keeps failed deletions visible for retry', async () => {
     const { wrapper } = await setup(undefined, vi.fn().mockRejectedValue(new Error('Category locked')));
-    wrapper.vm.toggle(1, true);
-    wrapper.vm.confirming = true;
-    await wrapper.vm.applyDeletions();
-    expect(wrapper.vm.selected).toEqual([1]);
+    await wrapper.vm.deleteItem(videos[0]);
+    expect(wrapper.vm.pairs).toHaveLength(1);
     expect(wrapper.vm.message).toContain('Category locked');
     expect(wrapper.emitted('deleted')).toBeUndefined();
-    expect(wrapper.vm.confirming).toBe(false);
+    expect(wrapper.vm.busy).toBe(false);
     wrapper.unmount();
   });
-  it('rejects invalid reports and keep both clears selections', async () => {
-    const { wrapper } = await setup();
-    wrapper.vm.toggle(1, true);
+  it('blocks repeated deletion while a request is pending and advances after success', async () => {
+    let finish;
+    const api = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    const { wrapper } = await setup([match(1, 2), match(2, 3)], api);
+    const pending = wrapper.vm.deleteItem(videos[0]);
+    await wrapper.vm.deleteItem(videos[1]);
+    expect(api).toHaveBeenCalledTimes(1);
+    finish({});
+    await pending;
+    expect(wrapper.vm.pair.left.id).toBe(2);
+    await wrapper.vm.deleteItem(videos[0]);
+    expect(api).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+  it('keeps both without deleting and handles end of report', async () => {
+    const { wrapper, api } = await setup([match(1, 2), match(2, 3)]);
     wrapper.vm.keepBoth();
-    expect(wrapper.vm.selected).toEqual([]);
+    expect(wrapper.vm.index).toBe(1);
+    wrapper.vm.keepBoth();
+    expect(wrapper.vm.message).toContain('Both files kept');
+    expect(api).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+  it('rejects invalid reports', async () => {
+    const { wrapper } = await setup();
     await wrapper.vm.importFile({ target: { files: [{ size: 10, text: async () => '{"matches":[{}]}' }] } });
     expect(wrapper.vm.message).toBe('Invalid similarity report.');
     expect(wrapper.vm.pairs).toHaveLength(0);
